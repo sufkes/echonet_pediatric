@@ -1,0 +1,13 @@
+.ipynb_checkpoints/
+__pycache__/
+*.swp
+echonet.cfg
+.echonet.cfg
+*.pyc
+echonet.egg-info/
+
+
+# Steven Ufkes 2021-03-05
+run_configs/
+output*/
+a4c-video-dir*/

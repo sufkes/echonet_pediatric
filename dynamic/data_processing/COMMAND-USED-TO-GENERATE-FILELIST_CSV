@@ -1,0 +1,1 @@
+./generateFileList.py update-2021-02-22/master_raw_data_sheet_2021-02-22.csv info_from_dicom_tags.csv avi_file_list.csv -o update-2021-02-22 -p
