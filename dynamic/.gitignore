@@ -11,5 +11,3 @@ echonet.egg-info/
 run_configs/
 output*/
 a4c-video-dir*/
-*.o[0-9]* # qsub run output files.
-*.e[0-9]* # qsub run error files.
