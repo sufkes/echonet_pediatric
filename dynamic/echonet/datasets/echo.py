@@ -72,13 +72,12 @@ class Echo(torch.utils.data.Dataset):
 
                  #### Added by Steven Ufkes:
                  file_list_path=None, # path to FileList.csv
-                 load_tracings=False, # whether to load VolumeTracings.csv
+                 load_tracings=True, # whether to load VolumeTracings.csv
                  volume_tracings_path=None, # path to VolumeTracings.csv
                  file_path_col='FilePath', # Column in FileList.csv to read AVI file paths from.
                  subject_name_col='Subject', # Column in FileList.csv to read subject IDs from.
                  split_col='Split' # Column in FileList.csv to assign splits from.
                  ):
-        print('DEBUG: I SET LOAD_TRACINGS TO FALSE BY DEFAULT; SET IT BACK TO TRUE. ALSO MAYBE SET SUBJECT_NAME_COL TO FileName.')
 
         if root is None:
             root = echonet.config.DATA_DIR

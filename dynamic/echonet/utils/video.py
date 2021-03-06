@@ -11,13 +11,16 @@ import torch
 import torchvision
 import tqdm
 
-import echonet
+#import echonet
 
 # Steven Ufkes: Added these modules
 import sys
 from collections import OrderedDict
 import json
 import argparse
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))) # Steven Ufkes: add this line so that video.py can be called directly and import echonet module.
+import echonet
 
 def run(num_epochs=45,
         modelname="r2plus1d_18",
@@ -34,10 +37,19 @@ def run(num_epochs=45,
         lr_step_period=15,
         run_test=False,
 
-        # Arguments added by Steve:
-        load_model_weights_only=False,
-        run_train=True,
-        cfg=None):
+        #### Added by Steven Ufkes:
+        # Needed within video.py
+        start_checkpoint_path=None, # Path to checkpoint file to resume from. Will not be overwritten unless it is in the default save location for the run.
+        load_model_weights_only=False, # Resume from checkpoint, but only take the model weights etc. store in checkpoint['state_dict']. Do not get the epoch number etc. Use if you want to retrain starting from the weights trained on the EchoNet dataset.
+        run_train=True, # Whether or not to train the model.
+        # Need to pass into echo.py
+        file_list_path=None, # path to FileList.csv
+        load_tracings=False, # whether to load VolumeTracings.csv
+        volume_tracings_path=None, # path to VolumeTracings.csv
+        file_path_col='FilePath', # Column in FileList.csv to read AVI file paths from.
+        subject_name_col='Subject', # Column in FileList.csv to read subject IDs from.
+        split_col='Split' # Column in FileList.csv to assign splits from.
+        ):
     """Trains/tests EF prediction model.
 
     Args:
@@ -74,15 +86,8 @@ def run(num_epochs=45,
             Defaults to 15.
         run_test (bool, optional): Whether or not to run on test.
             Defaults to False.
-
-        Arguments added by Steve:
-        load_model_weights_only (bool, optional): Resume from checkpoint, but only take the model weights etc. store in checkpoint['state_dict']. Do not get the epoch number etc. Use if you want to retrain starting from the weights trained on the EchoNet dataset.
-            Defaults to False.
-        run_test (bool, optional): Whether or not to train the model.
-            Defaults to True.
-        cfg (str, optional): Path to JSON configuration file. If specified, all arguments specified in this file will override the default arguments or other arguments passed into the function.
-            Defaults to None
     """
+
 
 
     # Seed RNGs
@@ -93,6 +98,20 @@ def run(num_epochs=45,
     if output is None:
         output = os.path.join("output", "video", "{}_{}_{}_{}".format(modelname, frames, period, "pretrained" if pretrained else "random"))
     os.makedirs(output, exist_ok=True)
+
+    #### Steven Ufkes: Save arguments of this function (hopefully including defaults) to the output directory. Not a great solution but works for now.
+#    locals_dict = locals()
+#    with open(os.path.join(output, ''), 'w') as f:
+#        json.dump(locals_dict, f)
+    ####
+
+    #### Steven Ufkes: Set path to checkpoint to resume from.
+    if start_checkpoint_path is None:
+        start_checkpoint_path = os.path.join(output, "checkpoint.pt")
+    else:
+        print('Warning: Resuming partially complete trains will not work if start_checkpoint_path is specified.')
+    ####
+    print('Will attempt to resume from checkpoint at path: '+str(start_checkpoint_path))
 
     # Set device for computations
     if device is None:
@@ -117,7 +136,17 @@ def run(num_epochs=45,
     if run_train:
         # Steve: They compute the mean and standard deviation of the training data (image intensity?), and use this to normalize the training data, and the test and validation data. For a test on external data, I need to normalize based on some mean and standard deviation. It seems that I should use the training mean and standard devation to normalize data acquired under the same conditions (e.g. same scanner etc.). Here, we are using a different scanner, and a scanning a pediatric sample rather than adults, so it might be sensible to normalize using the mean and standard devation of the test data.
         # Compute mean and std
-        mean, std = echonet.utils.get_mean_and_std(echonet.datasets.Echo(split="train"))
+        # Steven Ufkes: Need to pass new kwargs into mean, std calculation.
+        run_config_kwargs = {'file_list_path':file_list_path,
+                             'load_tracings':load_tracings,
+                             'volume_tracings_path':volume_tracings_path,
+                             'file_path_col':file_path_col,
+                             'subject_name_col':subject_name_col,
+                             'split_col':split_col
+                             }
+
+        #mean, std = echonet.utils.get_mean_and_std(echon   et.datasets.Echo(split="train"))
+        mean, std = echonet.utils.get_mean_and_std(echonet.datasets.Echo(split="train", **run_config_kwargs))
         kwargs = {"target_type": tasks,
                   "mean": mean,
                   "std": std,
@@ -126,7 +155,7 @@ def run(num_epochs=45,
                   }
 
         # Set up datasets and dataloaders
-        train_dataset = echonet.datasets.Echo(split="train", **kwargs, pad=12)
+        train_dataset = echonet.datasets.Echo(split="train", **kwargs, **run_config_kwargs, pad=12)
         if n_train_patients is not None and len(train_dataset) > n_train_patients:
             # Subsample patients (used for ablation experiment)
             indices = np.random.choice(len(train_dataset), n_train_patients, replace=False)
@@ -137,7 +166,7 @@ def run(num_epochs=45,
         dataloaders['train'] = train_dataloader # Steve : added this line instead of thing below.
 
         val_dataloader = torch.utils.data.DataLoader(
-            echonet.datasets.Echo(split="val", **kwargs), batch_size=batch_size, num_workers=num_workers, shuffle=True, pin_memory=(device.type == "cuda"))
+            echonet.datasets.Echo(split="val", **kwargs, **run_config_kwargs), batch_size=batch_size, num_workers=num_workers, shuffle=True, pin_memory=(device.type == "cuda"))
         dataloaders['val'] = val_dataloader # Steve : added this line instead of thing below.
         #dataloaders = {'train': train_dataloader, 'val': val_dataloader} # Steven: populate as needed instead, since training dataloader might not exist.
 
@@ -151,11 +180,12 @@ def run(num_epochs=45,
                 # Steven Ufkes: Next line gives the following error if run without GPU.
                 # RuntimeError: Attempting to deserialize object on a CUDA device but torch.cuda.is_available() is False. If you are running on a CPU-only machine, please use torch.load with map_location=torch.device('cpu') to map your storages to the CPU.
 
-                checkpoint = torch.load(os.path.join(output, "checkpoint.pt")) # original line.
+                #checkpoint = torch.load(os.path.join(output, "checkpoint.pt")) # original line.
+                checkpoint = torch.load(start_checkpoint_path)
 
                 if device == 'cpu': # Steve: This workaround is not tested or justified; except by a suggestion online.
                     print('Steve: Loading checkpoint:', checkpoint.keys())
-                    checkpoint = torch.load(os.path.join(output, "checkpoint.pt"), map_location=torch.device('cpu')) # modified line.
+                    checkpoint = torch.load(start_checkpoint_path), map_location=torch.device('cpu')) # modified line.
                     print('Steve: Creating spoof state_dict with "module." prefixes removed. Looks like these prefixes might be an inocuous artifact of the way the checkpoint was saved. Seems like the "module." prefix is expected when a GPU is available, otherwise not. Not sure why or how it might matter.')
 
                     spoof_state_dict = OrderedDict()
@@ -223,11 +253,11 @@ def run(num_epochs=45,
                     torch.save(save, os.path.join(output, "best.pt"))
                     bestLoss = loss
 
-        # Load best weights
-        checkpoint = torch.load(os.path.join(output, "best.pt"))
-        model.load_state_dict(checkpoint['state_dict'])
-        #f.write("Best validation loss {} from epoch {}\n".format(checkpoint["loss"], checkpoint["epoch"])) # Commented out because log file is no longer open.
-        #f.flush()
+            # Load best weights
+            checkpoint = torch.load(os.path.join(output, "best.pt"))
+            model.load_state_dict(checkpoint['state_dict'])
+            f.write("Best validation loss {} from epoch {}\n".format(checkpoint["loss"], checkpoint["epoch"])) # Commented out because log file is no longer open.
+            f.flush()
 
     if run_test:
         print("Steve: Running evaluation on 'val' and 'test' splits (hopefully).")
@@ -249,7 +279,7 @@ def run(num_epochs=45,
                 #print('Steve: Warning: Normalizing test and validation data using their respective means and variances.') Don't do this anymore.
                 # Compute mean and std
                 # mean, std = echonet.utils.get_mean_and_std(echonet.datasets.Echo(split=split)) # separate normalization for each split set (train, val, test).
-                mean, std = echonet.utils.get_mean_and_std(echonet.datasets.Echo(split='train'))
+                mean, std = echonet.utils.get_mean_and_std(echonet.datasets.Echo(split='train', **run_config_kwargs))
                 kwargs = {"target_type": tasks,
                           "mean": mean,
                           "std": std,
@@ -259,7 +289,7 @@ def run(num_epochs=45,
 
                 # Performance without test-time augmentation
                 dataloader = torch.utils.data.DataLoader(
-                    echonet.datasets.Echo(split=split, **kwargs),
+                    echonet.datasets.Echo(split=split, **kwargs, **run_config_kwargs),
                     batch_size=batch_size, num_workers=num_workers, shuffle=True, pin_memory=(device.type == "cuda"))
                 loss, yhat, y = echonet.utils.video.run_epoch(model, dataloader, False, None, device)
                 f.write("{} (one clip) R2:   {:.3f} ({:.3f} - {:.3f})\n".format(split, *echonet.utils.bootstrap(y, yhat, sklearn.metrics.r2_score)))
@@ -268,7 +298,7 @@ def run(num_epochs=45,
                 f.flush()
 
                 # Performance with test-time augmentation
-                ds = echonet.datasets.Echo(split=split, **kwargs, clips="all")
+                ds = echonet.datasets.Echo(split=split, **kwargs, **run_config_kwargs, clips="all")
                 dataloader = torch.utils.data.DataLoader(
                     ds, batch_size=1, num_workers=num_workers, shuffle=False, pin_memory=(device.type == "cuda"))
                 loss, yhat, y = echonet.utils.video.run_epoch(model, dataloader, False, None, device, save_all=True, block_size=100)
@@ -405,7 +435,7 @@ def run_from_config():
     parser.add_argument("config_path", help="JSON configuration file containing arguments accepted by video.run().")
 
     # Define optional arguments.
-#    parser.add_argument("-", "--", help="")
+#    parser.add_argument("-v", "--verbose", help="print lots of stuff")
 
     # Print help if no args input.
     if (len(sys.argv) == 1):
@@ -416,9 +446,13 @@ def run_from_config():
     args = parser.parse_args()
 
     # Read arguments to dict.
-    with open(config_path, 'r') as f:
-        arg_dict = json.load(config_path)
-    print(arg_dict)
+    with open(args.config_path, 'r') as f:
+        arg_dict = json.load(f)
+
+    # Copy config to output directory if specified.
+    if 'output' in arg_dict:
+        with open(os.path.join(output, 'run_config.json'), 'w') as f:
+            json.dump(arg_dict, f)
 
     # Run main function.
     run(**arg_dict)

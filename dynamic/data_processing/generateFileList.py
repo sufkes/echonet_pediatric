@@ -167,11 +167,11 @@ def main(patient_data_path, dicom_data_path, avi_data_path, out_dir=os.getcwd(),
 #    print('Note discrepancies in scan dates between datasheet and DICOM headers:')
 #    print(df[(df['StudyDate'] != df['DOS']) & (~df['DOS'].isna())])
 
-    print(len(df))
+#    print(len(df))
     df = df.merge(avi_df, on='Subject', how='inner')
-    print([s for s in df['Subject'].tolist() if not s in avi_df['Subject'].tolist()])
-    print([s for s in avi_df['Subject'].tolist() if not s in df['Subject'].tolist()])
-    print(len(df))
+#    print([s for s in df['Subject'].tolist() if not s in avi_df['Subject'].tolist()])
+#    print([s for s in avi_df['Subject'].tolist() if not s in df['Subject'].tolist()])
+#    print(len(df))
 
     # Drop columns
     drop_cols = ['SUBJECT', 'DOS']
