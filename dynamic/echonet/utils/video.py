@@ -132,19 +132,19 @@ def run(num_epochs=45,
         lr_step_period = math.inf
     scheduler = torch.optim.lr_scheduler.StepLR(optim, lr_step_period)
 
+    # Steven Ufkes: Need to pass new kwargs into mean, std calculation.
+    run_config_kwargs = {'file_list_path':file_list_path,
+                         'load_tracings':load_tracings,
+                         'volume_tracings_path':volume_tracings_path,
+                         'file_path_col':file_path_col,
+                         'subject_name_col':subject_name_col,
+                         'split_col':split_col
+                         }
+
     dataloaders = {}
     if run_train:
         # Steve: They compute the mean and standard deviation of the training data (image intensity?), and use this to normalize the training data, and the test and validation data. For a test on external data, I need to normalize based on some mean and standard deviation. It seems that I should use the training mean and standard devation to normalize data acquired under the same conditions (e.g. same scanner etc.). Here, we are using a different scanner, and a scanning a pediatric sample rather than adults, so it might be sensible to normalize using the mean and standard devation of the test data.
         # Compute mean and std
-        # Steven Ufkes: Need to pass new kwargs into mean, std calculation.
-        run_config_kwargs = {'file_list_path':file_list_path,
-                             'load_tracings':load_tracings,
-                             'volume_tracings_path':volume_tracings_path,
-                             'file_path_col':file_path_col,
-                             'subject_name_col':subject_name_col,
-                             'split_col':split_col
-                             }
-
         #mean, std = echonet.utils.get_mean_and_std(echon   et.datasets.Echo(split="train"))
         mean, std = echonet.utils.get_mean_and_std(echonet.datasets.Echo(split="train", **run_config_kwargs))
         kwargs = {"target_type": tasks,
@@ -185,7 +185,7 @@ def run(num_epochs=45,
 
                 if device == 'cpu': # Steve: This workaround is not tested or justified; except by a suggestion online.
                     print('Steve: Loading checkpoint:', checkpoint.keys())
-                    checkpoint = torch.load(start_checkpoint_path), map_location=torch.device('cpu')) # modified line.
+                    checkpoint = torch.load(start_checkpoint_path, map_location=torch.device('cpu')) # modified line.
                     print('Steve: Creating spoof state_dict with "module." prefixes removed. Looks like these prefixes might be an inocuous artifact of the way the checkpoint was saved. Seems like the "module." prefix is expected when a GPU is available, otherwise not. Not sure why or how it might matter.')
 
                     spoof_state_dict = OrderedDict()
@@ -432,7 +432,7 @@ def run_from_config():
     parser = argparse.ArgumentParser(description=description)
 
     # Define positional arguments.
-    parser.add_argument("config_path", help="JSON configuration file containing arguments accepted by video.run().")
+    parser.add_argument("config_path", help="JSON configuration file containing arguments accepted by video.run().", type=str)
 
     # Define optional arguments.
 #    parser.add_argument("-v", "--verbose", help="print lots of stuff")
@@ -443,16 +443,17 @@ def run_from_config():
         sys.exit()
 
     # Parse arguments.
-    args = parser.parse_args()
+    config_args = parser.parse_args()
 
     # Read arguments to dict.
-    with open(args.config_path, 'r') as f:
+    with open(config_args.config_path, 'r') as f:
         arg_dict = json.load(f)
 
     # Copy config to output directory if specified.
     if 'output' in arg_dict:
-        with open(os.path.join(output, 'run_config.json'), 'w') as f:
-            json.dump(arg_dict, f)
+        os.makedirs(arg_dict['output'], exist_ok=True)
+        with open(os.path.join(arg_dict['output'], 'run_config.json'), 'w') as f:
+            json.dump(arg_dict, f, indent=4)
 
     # Run main function.
     run(**arg_dict)
