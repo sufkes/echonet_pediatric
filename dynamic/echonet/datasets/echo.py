@@ -9,7 +9,6 @@ import skimage.draw
 import torch.utils.data
 import echonet
 
-
 class Echo(torch.utils.data.Dataset):
     """EchoNet-Dynamic Dataset.
 
@@ -296,16 +295,27 @@ class Echo(torch.utils.data.Dataset):
         else:
             video = np.stack(video)
 
+        ## Steve: Padding section below was not set up to deal with clips>1; try to do that. How about let's pad each clip differently too? Why not.
         if self.pad is not None:
-            # Add padding of zeros (mean color of videos)
-            # Crop of original size is taken out
-            # (Used as augmentation)
-            c, l, h, w = video.shape
-            temp = np.zeros((c, l, h + 2 * self.pad, w + 2 * self.pad), dtype=video.dtype)
-            temp[:, :, self.pad:-self.pad, self.pad:-self.pad] = video  # pylint: disable=E1130
-            i, j = np.random.randint(0, 2 * self.pad, 2)
-            video = temp[:, :, i:(i + h), j:(j + w)]
-
+            if self.clips == 1:
+                ####### ORIGINAL
+                # Add padding of zeros (mean color of videos)
+                # Crop of original size is taken out
+                # (Used as augmentation)
+                c, l, h, w = video.shape
+                temp = np.zeros((c, l, h + 2 * self.pad, w + 2 * self.pad), dtype=video.dtype)
+                temp[:, :, self.pad:-self.pad, self.pad:-self.pad] = video  # pylint: disable=E1130
+                i, j = np.random.randint(0, 2 * self.pad, 2)
+                video = temp[:, :, i:(i + h), j:(j + w)]
+                ####### END OF ORIGINAL
+            else:
+                num_clips, c, l, h, w = video.shape
+                for clip_index in range(num_clips):
+                    video_clip = video[clip_index, :, :, :, :]
+                    temp = np.zeros((c, l, h + 2 * self.pad, w + 2 * self.pad), dtype=video.dtype)
+                    temp[:, :, self.pad:-self.pad, self.pad:-self.pad] = video_clip  # pylint: disable=E1130
+                    i, j = np.random.randint(0, 2 * self.pad, 2)
+                    video[clip_index, :, :, :, :] = temp[:, :, i:(i + h), j:(j + w)]
         return video, target
 
     def __len__(self):

@@ -1,14 +1,23 @@
-#!/usr/bin/env rscript
+#!/usr/bin/env Rscript
 library(argparser)
 library(dplyr)
 library(ggplot2)
 library(tools) # for file_path_sans_ext()
 
+plotPredictions <- function(file_path, out_dir) {
+  df <- read.csv(file_path)
 
-plotPredictions <- function(actual_prediction_file_path) {
-  df <- read.csv(actual_prediction_file_path)
+  # Rename actual and prediction columns to appease ggplot.
+  for (col in colnames(df)) {
+      if (grepl('actual$', col)) {
+        df['actual'] <- df[col]
+      }
+      else if (grepl('prediction$', col)) {
+        df['prediction'] <- df[col]
+      }
+  }
 
-  p <- df %>% ggplot(aes(x = EF_actual, y = EF_prediction)) + 
+  p <- df %>% ggplot(aes(x=actual, y=prediction)) + 
     geom_point(alpha = 0.8) +
     geom_smooth(method = 'lm', se = FALSE) + 
     ggpubr::stat_cor(method = 'pearson') +
@@ -19,8 +28,10 @@ plotPredictions <- function(actual_prediction_file_path) {
     theme(text=element_text(size=24))
   
   # Save plot
-  out_dir = dirname(actual_prediction_file_path)
-  out_name_without_extension = file_path_sans_ext(basename(actual_prediction_file_path))
+  if (is.na(out_dir)) {
+    out_dir = dirname(file_path)
+  }
+  out_name_without_extension = file_path_sans_ext(basename(file_path))
   out_name = paste0(out_name_without_extension, '.png')
   out_path = file.path(out_dir, out_name)
   
@@ -31,17 +42,19 @@ plotPredictions <- function(actual_prediction_file_path) {
   ggsave(out_path, height=height, width=width)
 }
 
-#file_path <- '/Volumes/ccmbio/sufkes/echonet/dynamic/output/video/r2plus1d_18_32_2_pretrained/train_EF_pred_and_actual.csv'
-#file_path <- '/Volumes/ccmbio/sufkes/echonet/dynamic/output/video/r2plus1d_18_32_2_pretrained/val_EF_pred_and_actual.csv'
-#file_path <- '/Volumes/ccmbio/sufkes/echonet_pediatric/runs/sickkids-split_all_random-train_from_echonet-test2/val_EF_pred_and_actual.csv'
-
-
-description <- 'Pirate arrrgument parser for swashbucklers and scalawags. Ahoy!'
-parser <- arg_parser(description, name='Arrrrgs matey! Shiver me timbers!')
-parser <- add_argument(parser, '--out_dir', short='-o', help='output directory', )
-parser <- add_argument(parser, '--out_dir', short='-o', help='output directory', default='.')
+description <- 'Plot predicted versus actual.'
+parser <- arg_parser(description)
+parser <- add_argument(parser, 'file_path', help='path to CSV file with actual and predicted values')
+parser <- add_argument(parser, '--out_dir', short='-o', help='output directory. Default: save to same directory as input CSV file.', default=NULL)
 args <- parse_args(parser)
 
-plotPredictions(file_path)
+#plotPredictions(file_path)
+#print('Args raw.')
+#print(args) # first three things in args are junk; get rid of them?
 
+args <- args[-c(1:3)]
 
+#print('Args with junk removed.')
+#print(args) # first three things in args are junk; get rid of them?
+
+do.call(plotPredictions, args)

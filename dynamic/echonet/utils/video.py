@@ -19,6 +19,8 @@ from collections import OrderedDict
 import json
 import argparse
 
+import random # Only added so that I can manually set the seed, in the off chance that some module uses it. Could maybe remove.
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))) # Steven Ufkes: add this line so that video.py can be called directly and import echonet module.
 import echonet
 
@@ -48,7 +50,11 @@ def run(num_epochs=45,
         volume_tracings_path=None, # path to VolumeTracings.csv
         file_path_col='FilePath', # Column in FileList.csv to read AVI file paths from.
         subject_name_col='Subject', # Column in FileList.csv to read subject IDs from.
-        split_col='Split' # Column in FileList.csv to assign splits from.
+        split_col='Split', # Column in FileList.csv to assign splits from.
+        freeze_n_conv_layers=None, # int, how many of the (2+1D) conv layers to freeze, starting from the first layer and up to five (there are 5 (2+1D)conv layers
+        set_fc_bias=True, # Original script does `model.fc.bias.data[0] = 55.6`; Let's try without doing that.
+        clips=1, # Original script always uses clips=1 for training; not sure if the training loop will work with clips>1, but let us try.
+        training_block_size=None # Added this option for training when clips>1; Maximum number of augmentations to run on at the same time. Use to limit the amount of memory used. If None, always run on all augmentations simultaneously.
         ):
     """Trains/tests EF prediction model.
 
@@ -88,11 +94,20 @@ def run(num_epochs=45,
             Defaults to False.
     """
 
-
-
     # Seed RNGs
-    np.random.seed(seed)
+    ## Old random number seeding, code was non-deterministic:
+    #np.random.seed(seed)
+    #torch.manual_seed(seed)
+
+    ## New random number seeding, code appears deterministic when run on GPU with num_workers=0.
     torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)  # if you are using multi-GPU.
+    np.random.seed(seed)  # Numpy module.
+    random.seed(seed)  # Python random module.
+    torch.manual_seed(seed)
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
 
     # Set default output directory
     if output is None:
@@ -121,9 +136,52 @@ def run(num_epochs=45,
     model = torchvision.models.video.__dict__[modelname](pretrained=pretrained)
 
     model.fc = torch.nn.Linear(model.fc.in_features, 1)
-    model.fc.bias.data[0] = 55.6
+
+
+    #model.fc.bias.data[0] = 55.6 # Steven: I don't know why this would be done. Replace with optional set below.
+    if set_fc_bias:
+        model.fc.bias.data[0] = 55.6
+
     if device.type == "cuda":
         model = torch.nn.DataParallel(model)
+
+
+    ######### Steven Ufkes: Freeze layers #########
+    ### r2plus1d_18 has one child: VideoResNet
+    ### VideoResNet has 7 children: 5 (2+1D) Conv layers (each possibly with slight differences), avpool, fc.
+    #len(parameters) in subchild: 6
+    #len(parameters) in subchild: 24
+    #len(parameters) in subchild: 27
+    #len(parameters) in subchild: 27
+    #len(parameters) in subchild: 27
+    #len(parameters) in subchild: 0
+    #len(parameters) in subchild: 2
+
+    ## Take a look at the layers.
+    #print(model)
+    #print('len(parameters):', len(list(model.parameters())))
+    #print('len(children) in model:', len(list(model.children())))
+    #for child in model.children():
+        #print('len(children) in model child:', len(list(child.children())))
+        #for subchild in child.children(): # 7 layers are "grandchildren
+            #print(subchild)
+            #print('len(parameters) in subchild:', len(list(subchild.parameters())))
+            #print('len(children) in model subchild:', len(list(subchild.children())))
+
+    # Freeze the conv layers:
+    if freeze_n_conv_layers:
+        if (not modelname == 'r2plus1d_18'):
+            raise Exception('Freezing layers implemented only for model "r2plus1d".')
+        if not (freeze_n_conv_layers in range(0,6)):
+            raise Exception('freeze_n_conv_layers must be an integer in [0,1,2,3,4,5] or None')
+
+        for child in model.children(): # 1 child
+            for conv_layer in list(child.children())[:freeze_n_conv_layers]:
+                for param in conv_layer.parameters():
+                    param.requires_grad = False # Freeze the layer.
+
+    ########################################################################
+
     model.to(device)
 
     # Set up optimizer
@@ -139,23 +197,29 @@ def run(num_epochs=45,
                          'file_path_col':file_path_col,
                          'subject_name_col':subject_name_col,
                          'split_col':split_col
-                         }
+                         } # Steve: I think clips should always be 1 in the mean & std calculation, so add the clips argument manually.
 
     dataloaders = {}
+
+    ## Steve: If running test only, I still need the mean and standard deviation of the training data set for normalization of the test data set.
+    # This should be reworked such that the mean and std are saved as model parameters. Otherwise tests require the training data.
+    mean_train, std_train = echonet.utils.get_mean_and_std(echonet.datasets.Echo(split="train", **run_config_kwargs), samples=None) # mean calculated on subset unless samples=None
+
     if run_train:
         # Steve: They compute the mean and standard deviation of the training data (image intensity?), and use this to normalize the training data, and the test and validation data. For a test on external data, I need to normalize based on some mean and standard deviation. It seems that I should use the training mean and standard devation to normalize data acquired under the same conditions (e.g. same scanner etc.). Here, we are using a different scanner, and a scanning a pediatric sample rather than adults, so it might be sensible to normalize using the mean and standard devation of the test data.
         # Compute mean and std
-        #mean, std = echonet.utils.get_mean_and_std(echon   et.datasets.Echo(split="train"))
-        mean, std = echonet.utils.get_mean_and_std(echonet.datasets.Echo(split="train", **run_config_kwargs))
+        #mean, std = echonet.utils.get_mean_and_std(echonet.datasets.Echo(split="train"))
+
         kwargs = {"target_type": tasks,
-                  "mean": mean,
-                  "std": std,
+                  "mean": mean_train,
+                  "std": std_train,
                   "length": frames,
                   "period": period,
                   }
 
         # Set up datasets and dataloaders
-        train_dataset = echonet.datasets.Echo(split="train", **kwargs, **run_config_kwargs, pad=12)
+        # train_dataset = echonet.datasets.Echo(split="train", **kwargs, **run_config_kwargs, pad=12)
+        train_dataset = echonet.datasets.Echo(split="train", **kwargs, **run_config_kwargs, pad=12, clips=clips)
         if n_train_patients is not None and len(train_dataset) > n_train_patients:
             # Subsample patients (used for ablation experiment)
             indices = np.random.choice(len(train_dataset), n_train_patients, replace=False)
@@ -165,8 +229,10 @@ def run(num_epochs=45,
             train_dataset, batch_size=batch_size, num_workers=num_workers, shuffle=True, pin_memory=(device.type == "cuda"), drop_last=True)
         dataloaders['train'] = train_dataloader # Steve : added this line instead of thing below.
 
+        # val_dataloader = torch.utils.data.DataLoader(
+        #     echonet.datasets.Echo(split="val", **kwargs, **run_config_kwargs), batch_size=batch_size, num_workers=num_workers, shuffle=True, pin_memory=(device.type == "cuda"))
         val_dataloader = torch.utils.data.DataLoader(
-            echonet.datasets.Echo(split="val", **kwargs, **run_config_kwargs), batch_size=batch_size, num_workers=num_workers, shuffle=True, pin_memory=(device.type == "cuda"))
+            echonet.datasets.Echo(split="val", **kwargs, **run_config_kwargs, clips=clips), batch_size=batch_size, num_workers=num_workers, shuffle=True, pin_memory=(device.type == "cuda"))
         dataloaders['val'] = val_dataloader # Steve : added this line instead of thing below.
         #dataloaders = {'train': train_dataloader, 'val': val_dataloader} # Steven: populate as needed instead, since training dataloader might not exist.
 
@@ -186,7 +252,7 @@ def run(num_epochs=45,
                 if device == 'cpu': # Steve: This workaround is not tested or justified; except by a suggestion online.
                     print('Steve: Loading checkpoint:', checkpoint.keys())
                     checkpoint = torch.load(start_checkpoint_path, map_location=torch.device('cpu')) # modified line.
-                    print('Steve: Creating spoof state_dict with "module." prefixes removed. Looks like these prefixes might be an inocuous artifact of the way the checkpoint was saved. Seems like the "module." prefix is expected when a GPU is available, otherwise not. Not sure why or how it might matter.')
+                    print('Steve: Creating new state_dict with "module." prefixes removed. Looks like these prefixes might be an inocuous artifact of the way the checkpoint was saved. Seems like the "module." prefix is expected when a GPU is available, otherwise not. Not sure why or how it might matter.')
 
                     spoof_state_dict = OrderedDict()
                     for key, value in checkpoint['state_dict'].items():
@@ -209,7 +275,7 @@ def run(num_epochs=45,
                     epoch_resume = checkpoint["epoch"] + 1
                     bestLoss = checkpoint["best_loss"]
                 else:
-                    print('Steve: Loading state_dict for model only.')
+                    print('Steve: Loaded model.state_dict() only. Epoch, optimizer, scheduler, and bestLoss of checkpoint ignored.')
                 # ---- END OF MODIFICATION ----
 
                 f.write("Resuming from epoch {}\n".format(epoch_resume))
@@ -223,7 +289,8 @@ def run(num_epochs=45,
                     for i in range(torch.cuda.device_count()):
                         torch.cuda.reset_max_memory_allocated(i)
                         torch.cuda.reset_max_memory_cached(i)
-                    loss, yhat, y = echonet.utils.video.run_epoch(model, dataloaders[phase], phase == "train", optim, device)
+                    #loss, yhat, y = echonet.utils.video.run_epoch(model, dataloaders[phase], phase == "train", optim, device)
+                    loss, yhat, y = echonet.utils.video.run_epoch(model, dataloaders[phase], phase=="train", optim, device, block_size=training_block_size)
                     f.write("{},{},{},{},{},{},{},{},{}\n".format(epoch,
                                                                   phase,
                                                                   loss,
@@ -276,20 +343,17 @@ def run(num_epochs=45,
                     continue
                 # Steve: They compute the mean and standard devation of the training data (image intensity?), and use this to normalize the training data, and the test and validation data. For a test on external data, I need to normalize based on some mean and standard deviation. It seems that I should use the training mean and standard devation to normalize data acquired under the same conditions (e.g. same scanner etc.). Here, we are using a different scanner, and a scanning a pediatric sample rather than adults, so it might be sensible to normalize using the mean and standard devation of the test data.
 
-                #print('Steve: Warning: Normalizing test and validation data using their respective means and variances.') Don't do this anymore.
                 # Compute mean and std
-                # mean, std = echonet.utils.get_mean_and_std(echonet.datasets.Echo(split=split)) # separate normalization for each split set (train, val, test).
-                mean, std = echonet.utils.get_mean_and_std(echonet.datasets.Echo(split='train', **run_config_kwargs))
                 kwargs = {"target_type": tasks,
-                          "mean": mean,
-                          "std": std,
+                          "mean": mean_train,
+                          "std": std_train,
                           "length": frames,
                           "period": period,
                           }
 
                 # Performance without test-time augmentation
                 dataloader = torch.utils.data.DataLoader(
-                    echonet.datasets.Echo(split=split, **kwargs, **run_config_kwargs),
+                    echonet.datasets.Echo(split=split, **kwargs, **run_config_kwargs), # Steve: clips=1 default will be used here.
                     batch_size=batch_size, num_workers=num_workers, shuffle=True, pin_memory=(device.type == "cuda"))
                 loss, yhat, y = echonet.utils.video.run_epoch(model, dataloader, False, None, device)
                 f.write("{} (one clip) R2:   {:.3f} ({:.3f} - {:.3f})\n".format(split, *echonet.utils.bootstrap(y, yhat, sklearn.metrics.r2_score)))
@@ -347,7 +411,6 @@ def run(num_epochs=45,
 #                plt.savefig(os.path.join(output, "{}_roc.pdf".format(split)))
 #                plt.close(fig)
 
-
 def run_epoch(model, dataloader, train, optim, device, save_all=False, block_size=None):
     """Run one epoch of training/evaluation for segmentation.
 
@@ -386,8 +449,8 @@ def run_epoch(model, dataloader, train, optim, device, save_all=False, block_siz
 
                 average = (len(X.shape) == 6)
                 if average:
-                    batch, n_clips, c, f, h, w = X.shape
-                    X = X.view(-1, c, f, h, w)
+                    batch, n_clips, c, f, h, w = X.shape # Steve: Not sure what batch is.
+                    X = X.view(-1, c, f, h, w) # Steve: has dimensions (?, color, frames, height, width)
 
                 s1 += outcome.sum()
                 s2 += (outcome ** 2).sum()
@@ -395,7 +458,7 @@ def run_epoch(model, dataloader, train, optim, device, save_all=False, block_siz
                 if block_size is None:
                     outputs = model(X)
                 else:
-                    outputs = torch.cat([model(X[j:(j + block_size), ...]) for j in range(0, X.shape[0], block_size)])
+                    outputs = torch.cat([model(X[j:(j+block_size), ...]) for j in range(0, X.shape[0], block_size)])
 
                 if save_all:
                     yhat.append(outputs.view(-1).to("cpu").detach().numpy())
