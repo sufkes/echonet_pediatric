@@ -4,7 +4,7 @@ library(dplyr)
 library(ggplot2)
 library(tools) # for file_path_sans_ext()
 
-plotPredictions <- function(file_path, out_dir) {
+plotPredictions <- function(file_path, out_dir, auto_bounds=FALSE) {
   df <- read.csv(file_path)
 
   # Rename actual and prediction columns to appease ggplot.
@@ -17,12 +17,21 @@ plotPredictions <- function(file_path, out_dir) {
       }
   }
 
+  if (auto_bounds == TRUE) {
+    min_val=min(min(df['actual']), min(df['prediction']))
+    max_val=max(max(df['actual']), max(df['prediction']))
+    axis_min = min_val - 0.05*(max_val - min_val)
+    axis_max = max_val + 0.05*(max_val - min_val)
+  } else {
+    axis_min=0
+    axis_max=100
+  }
   p <- df %>% ggplot(aes(x=actual, y=prediction)) + 
     geom_point(alpha = 0.8) +
     geom_smooth(method = 'lm', se = FALSE) + 
     ggpubr::stat_cor(method = 'pearson') +
-    xlim(0,100) +
-    ylim(0,100) +
+    xlim(axis_min, axis_max) +
+    ylim(axis_min, axis_max) +
     #scale_colour_viridis_c()
     geom_abline(slope=1, intercept=0) + 
     theme(text=element_text(size=24))
@@ -46,14 +55,18 @@ description <- 'Plot predicted versus actual.'
 parser <- arg_parser(description)
 parser <- add_argument(parser, 'file_path', help='path to CSV file with actual and predicted values')
 parser <- add_argument(parser, '--out_dir', short='-o', help='output directory. Default: save to same directory as input CSV file.', default=NULL)
+parser <- add_argument(parser, '--auto_bounds', short='-a', help='automatically determine axis bounds for figures.', flag=TRUE)
 args <- parse_args(parser)
 
 #plotPredictions(file_path)
 #print('Args raw.')
 #print(args) # first three things in args are junk; get rid of them?
 
-args <- args[-c(1:3)]
+args[[1]] <- NULL
+args[['help']] <- NULL
+args[['opts']] <- NULL
 
+#print(args)
 #print('Args with junk removed.')
 #print(args) # first three things in args are junk; get rid of them?
 

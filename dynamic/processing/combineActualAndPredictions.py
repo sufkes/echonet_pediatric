@@ -22,7 +22,6 @@ def main(config_path=None, actual_path=None, prediction_paths=None, out_dir=None
         run_out_dir = config['output']
         if 'tasks' in config:
             tasks = config['tasks']            
-        print(run_out_dir)
         prediction_paths = glob.glob(run_out_dir+'/*_predictions.csv')
     
 
@@ -50,6 +49,15 @@ def main(config_path=None, actual_path=None, prediction_paths=None, out_dir=None
         df_all[actual_col] = [df_actual.loc[(df_actual['Subject']==subject), tasks].values[0] for subject in df_all['Subject']]
         df_all[prediction_col] = [df_prediction.loc[df_prediction['Subject']==subject, tasks].mean() for subject in df_all['Subject']]
 
+        ## For LVOT, convert the actual and predicted values back to mm using the resolution for each subject.
+        if 'LVOT' in tasks:
+            print('Converting LVOT from pixels to cm for run', "'"+config_path+"'")
+            resolution_col = 'PhysicalDeltaX'
+            df_all = df_all.merge(df_actual[['Subject', resolution_col]], on='Subject', how='left')
+            for lvot_col in [actual_col, prediction_col]:
+                df_all[lvot_col] = [10*lvot*resolution for lvot, resolution in zip(df_all[lvot_col], df_all[resolution_col])] # Also change from cm to mm.
+            df_all.drop(columns=resolution_col, inplace=True)
+            
         ## Save plot and spreadsheet.
         if out_dir is None:
             out_dir = os.path.dirname(prediction_path)
@@ -86,7 +94,7 @@ if (__name__ == '__main__'):
     parser.add_argument("-a", "--actual_path", help="path to actual values.")
     parser.add_argument("-p", "--prediction_paths", help="paths to predictions files output by EchoNet.", nargs='+') # can list 1 or more predictions files.
     parser.add_argument("-o", "--out_dir", help="output directory; default: save to same directory as the predictions file.")
-
+    
     # Parse arguments.
     args = parser.parse_args()
 

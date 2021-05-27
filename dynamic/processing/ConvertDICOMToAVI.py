@@ -30,6 +30,7 @@ from shutil import copy
 import math
 
 destinationFolder = '/hpf/largeprojects/ccmbio/sufkes/echonet/data/data_processed/4c'
+#destinationFolder = '/hpf/largeprojects/ccmbio/sufkes/echonet_pediatric/data/data_from_sickkids/processed/echo_data/lvot_n261'
 
 # In[10]:
 
@@ -40,9 +41,7 @@ destinationFolder = '/hpf/largeprojects/ccmbio/sufkes/echonet/data/data_processe
 #!pip install pydicom
 #!pip install opencv-python
 
-
 # In[2]:
-
 
 def mask(output):
     dimension = output.shape[0]
@@ -50,7 +49,6 @@ def mask(output):
     # Mask pixels outside of scanning sector
     m1, m2 = np.meshgrid(np.arange(dimension), np.arange(dimension))
     
-
     mask = ((m1+m2)>int(dimension/2) + int(dimension/10)) 
     mask *=  ((m1-m2)<int(dimension/2) + int(dimension/10))
     mask = np.reshape(mask, (dimension, dimension)).astype(np.int8)
@@ -61,17 +59,14 @@ def mask(output):
     return maskedImage
 
 
-
 # In[3]:
 
 
 def makeVideo(fileToProcess, destinationFolder):
-
     # SU: removed try-except block.
 #    try:
         #fileName = fileToProcess.split('\\')[-1] #\\ if windows, / if on mac or sherlock
                                                  #hex(abs(hash(fileToProcess.split('/')[-1]))).upper()
-
 
     fileName = os.path.basename(fileToProcess) # SU lines above seem to be looking for the filename.
     print(fileName) # SU
@@ -81,7 +76,7 @@ def makeVideo(fileToProcess, destinationFolder):
         testarray = dataset.pixel_array
 
         #print(dataset)
-        print(testarray.shape) 
+        print('Dimensions (original):', testarray.shape) 
             
         frame0 = testarray[0] # SU: first time point; e.g. shape = (708, 1016, 3)
         mean = np.mean(frame0, axis=1) # SU: e.g. shape = (708, 3)
@@ -89,11 +84,12 @@ def makeVideo(fileToProcess, destinationFolder):
 
         # SU: next line causes an IndexError because mean>1 everywhere. Not sure what this is attempting to do. Try skipping the crop. Maybe it's looking for the *first* value y index that has mean<1?
 
-        try: # SU 
-            yCrop = np.where(mean<1)[0][0] # original line
-        except IndexError: # SU
-            yCrop = 0 # SU
-        testarray = testarray[:, yCrop:, :, :]
+        #try: # SU 
+        #    yCrop = np.where(mean<1)[0][0] # original line
+        #except IndexError: # SU
+        #    yCrop = 0 # SU
+        #testarray = testarray[:, yCrop:, :, :]
+        ## SU: comment out above section since it appears possible to alter the scaling from scan to scan.
 
 
         # SU: looks like this section cuts off rows and columns at the edges such that the number of rows matches the number of columns.
@@ -105,7 +101,7 @@ def makeVideo(fileToProcess, destinationFolder):
                 testarray = testarray[:, bias:-bias, :, :]
 
 
-        print(testarray.shape)
+        print('Dimensions (after matching x and y sizes):', testarray.shape)
         frames,height,width,channels = testarray.shape
 
         fps = 30
@@ -123,17 +119,19 @@ def makeVideo(fileToProcess, destinationFolder):
         print("video_filename:", video_filename)
         out = cv2.VideoWriter(video_filename, fourcc, fps, cropSize)
 
-
         for i in range(frames):
-
             outputA = testarray[i,:,:,0]
             smallOutput = outputA[int(height/10):(height - int(height/10)), int(height/10):(height - int(height/10))]
+
+            if i == 0:
+                print('Dimensions (after trimming 10% of each side):', smallOutput.shape)
+                print('Pixel size (x) scaled up by a factor of:', smallOutput.shape[0]/cropSize[0])
+                print('Pixel size (y) scaled up by a factor of:', smallOutput.shape[1]/cropSize[1])
 
             # Resize image
             output = cv2.resize(smallOutput, cropSize, interpolation = cv2.INTER_CUBIC)
 
             finaloutput = mask(output)
-
 
             finaloutput = cv2.merge([finaloutput,finaloutput,finaloutput])
             out.write(finaloutput)
@@ -151,12 +149,12 @@ def makeVideo(fileToProcess, destinationFolder):
 
 
 AllA4cNames = '/hpf/largeprojects/ccmbio/sufkes/echonet/data/4c_files_only'
-
+#AllA4cNames = '/hpf/largeprojects/ccmbio/sufkes/echonet_pediatric/data/data_from_sickkids/raw/data_from_onedrive-20210118_lvot_files_only'
 
 count = 0
     
 cropSize = (112,112)
-subfolders = os.listdir(AllA4cNames)
+#subfolders = os.listdir(AllA4cNames) # Steve: commented out to avoid error if AllA4cNames directory doesn't exist.
 
 
 #for folder in subfolders:

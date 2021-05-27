@@ -23,13 +23,14 @@ def main(**kwargs):
     out_path = kwargs['out_path']
     if out_path is None:
         #out_path = os.path.dirname(__file__)+'/../../runs/metrics.csv'
-        out_path = '/hpf/largeprojects/ccmbio/sufkes/echonet_pediatric/runs/metrics.csv'
+        out_path = '/hpf/largeprojects/ccmbio/sufkes/echonet_pediatric/runs/metrics-doppler.csv'
     in_dirs = kwargs['in_dirs']
     if in_dirs is None:
-        in_dirs = glob.glob(os.path.dirname(__file__)+'/../../runs/*')
+        in_dirs = glob.glob(os.path.dirname(__file__)+'/../runs/*doppler*')
         in_dirs = [run_dir for run_dir in in_dirs if os.path.isdir(run_dir)]
         in_dirs.sort()
 
+    print(in_dirs)
     csv_suffix = '-pred_and_actual.csv'
 
     # Build dataframe of metrics for each run.
@@ -62,17 +63,14 @@ def main(**kwargs):
             # RMSE
             rmse = np.sqrt(mse)
 
-            # rRMSE # maybe a bit goofy
+            # rRMSE
             rrmse = rmse/mean_actual
             
             # MAE
             mae = 1/n*(np.abs(actual-prediction)).sum()
 
-            # rMAE # maybe a bit goofy
+            # rMAE
             rmae = mae/mean_actual
-
-            # MAPE
-            mape = 100/n*np.abs((actual-prediction)/actual).sum()
             
             # R
             r = np.corrcoef(actual, prediction)[1,0]
@@ -80,7 +78,7 @@ def main(**kwargs):
             # R squared
             r2 = r**2
 
-            # p-value - doesn't seem to work when p < 1e-12 or so; gives crazy numbers like 1e-80
+            # p-value ?
             y = pred_df[prediction_col]
             x = pred_df[actual_col]
             x = sm.add_constant(x)
@@ -102,7 +100,6 @@ def main(**kwargs):
             df.loc[run_name, split_prefix+'-MSE'] = mse
             df.loc[run_name, split_prefix+'-RMSE'] = rmse
             df.loc[run_name, split_prefix+'-MAE'] = mae
-            df.loc[run_name, split_prefix+'-MAPE'] = mape
             df.loc[run_name, split_prefix+'-rRMSE'] = rrmse
             df.loc[run_name, split_prefix+'-rMAE'] = rmae
             df.loc[run_name, split_prefix+'-R'] = r

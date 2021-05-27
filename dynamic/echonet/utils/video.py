@@ -145,7 +145,6 @@ def run(num_epochs=45,
     if device.type == "cuda":
         model = torch.nn.DataParallel(model)
 
-
     ######### Steven Ufkes: Freeze layers #########
     ### r2plus1d_18 has one child: VideoResNet
     ### VideoResNet has 7 children: 5 (2+1D) Conv layers (each possibly with slight differences), avpool, fc.
@@ -185,7 +184,10 @@ def run(num_epochs=45,
     model.to(device)
 
     # Set up optimizer
-    optim = torch.optim.SGD(model.parameters(), lr=1e-4, momentum=0.9, weight_decay=1e-4)
+    print('Warning: Using hard-coded alternate learning rate for one-time test.')
+    #lr=1e-4 # original
+    lr = 1e-5
+    optim = torch.optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=1e-4)
     if lr_step_period is None:
         lr_step_period = math.inf
     scheduler = torch.optim.lr_scheduler.StepLR(optim, lr_step_period)
@@ -203,7 +205,7 @@ def run(num_epochs=45,
 
     ## Steve: If running test only, I still need the mean and standard deviation of the training data set for normalization of the test data set.
     # This should be reworked such that the mean and std are saved as model parameters. Otherwise tests require the training data.
-    mean_train, std_train = echonet.utils.get_mean_and_std(echonet.datasets.Echo(split="train", **run_config_kwargs), samples=None) # mean calculated on subset unless samples=None
+    mean_train, std_train = echonet.utils.get_mean_and_std(echonet.datasets.Echo(split="train", target_type=tasks, **run_config_kwargs), samples=None) # mean calculated on subset unless samples=None
 
     if run_train:
         # Steve: They compute the mean and standard deviation of the training data (image intensity?), and use this to normalize the training data, and the test and validation data. For a test on external data, I need to normalize based on some mean and standard deviation. It seems that I should use the training mean and standard devation to normalize data acquired under the same conditions (e.g. same scanner etc.). Here, we are using a different scanner, and a scanning a pediatric sample rather than adults, so it might be sensible to normalize using the mean and standard devation of the test data.
@@ -235,6 +237,10 @@ def run(num_epochs=45,
             echonet.datasets.Echo(split="val", **kwargs, **run_config_kwargs, clips=clips), batch_size=batch_size, num_workers=num_workers, shuffle=True, pin_memory=(device.type == "cuda"))
         dataloaders['val'] = val_dataloader # Steve : added this line instead of thing below.
         #dataloaders = {'train': train_dataloader, 'val': val_dataloader} # Steven: populate as needed instead, since training dataloader might not exist.
+
+        test_dataloader = torch.utils.data.DataLoader(
+            echonet.datasets.Echo(split="test", **kwargs, **run_config_kwargs, clips=clips), batch_size=batch_size, num_workers=num_workers, shuffle=True, pin_memory=(device.type == "cuda"))
+        dataloaders['test'] = test_dataloader # Steve : added this line instead of thing below.
 
         # Run training and testing loops
         with open(os.path.join(output, "log.csv"), "a") as f:
@@ -284,7 +290,7 @@ def run(num_epochs=45,
 
             for epoch in range(epoch_resume, num_epochs):
                 print("Epoch #{}".format(epoch), flush=True)
-                for phase in ['train', 'val']:
+                for phase in ['train', 'val', 'test']:
                     start_time = time.time()
                     for i in range(torch.cuda.device_count()):
                         torch.cuda.reset_max_memory_allocated(i)
@@ -301,6 +307,7 @@ def run(num_epochs=45,
                                                                   sum(torch.cuda.max_memory_cached() for i in range(torch.cuda.device_count())),
                                                                   batch_size))
                     f.flush()
+
                 scheduler.step()
 
                 # Save checkpoint
@@ -331,16 +338,17 @@ def run(num_epochs=45,
         print('Attempting to load state dict for pretrained model weights.')
         checkpoint = torch.load(os.path.join(output, 'best.pt'))
         model.load_state_dict(checkpoint['state_dict'])
-        print('Warning: Did not run model.eval(), because the code does not include such a line. Seems like it should, but not sure if it matters here.')
+
+
 
         with open(os.path.join(output, 'log.csv'), 'a') as f:
 #            for split in ["val", "test"]: # original line
             for split in ['train', 'val', 'test']:
 
                 # Steve: skip test for now.
-                if split == 'test':
-                    print('Steve: Skipping split="test" for now.')
-                    continue
+                #if split == 'test':
+                    #print('Steve: Skipping split="test" for now.')
+                    #continue
                 # Steve: They compute the mean and standard devation of the training data (image intensity?), and use this to normalize the training data, and the test and validation data. For a test on external data, I need to normalize based on some mean and standard deviation. It seems that I should use the training mean and standard devation to normalize data acquired under the same conditions (e.g. same scanner etc.). Here, we are using a different scanner, and a scanning a pediatric sample rather than adults, so it might be sensible to normalize using the mean and standard devation of the test data.
 
                 # Compute mean and std

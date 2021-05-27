@@ -75,8 +75,11 @@ class Echo(torch.utils.data.Dataset):
                  volume_tracings_path=None, # path to VolumeTracings.csv
                  file_path_col='FilePath', # Column in FileList.csv to read AVI file paths from.
                  subject_name_col='Subject', # Column in FileList.csv to read subject IDs from.
-                 split_col='Split' # Column in FileList.csv to assign splits from.
+                 split_col='Split', # Column in FileList.csv to assign splits from.
+                 rotate180=False # Whether to rotate the image 180 degrees; try because it looks like our images are rotated relative to the EchoNet Dynamic dataset.
                  ):
+
+
 
         if root is None:
             root = echonet.config.DATA_DIR
@@ -96,6 +99,7 @@ class Echo(torch.utils.data.Dataset):
         self.noise = noise
         self.target_transform = target_transform
         self.external_test_location = external_test_location
+        self.rotate180 = rotate180
 
         #### Things added by Steven Ufkes
         if file_list_path is None: # Use hard-coded value as before if no argument provided.
@@ -197,6 +201,10 @@ class Echo(torch.utils.data.Dataset):
 
         # Load video into np.array
         video = echonet.utils.loadvideo(video_path).astype(np.float32)
+
+        # Rotate video 180 degrees.
+        if self.rotate180:
+            video = np.rot90(video, k=2, axes=(len(video.shape)-2, len(video.shape)-1)) # rotate by 180 degrees in plane of last two dimensions (height and width).
 
         # Add simulated noise (black out random pixels)
         # 0 represents black at this point (video has not been normalized yet)
