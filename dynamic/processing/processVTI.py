@@ -97,7 +97,35 @@ def main(in_dir, out_dir, out_type='png', out_mode='RGB', debug=False, new_heigh
         df.loc[subject, 'rescale_y'] = rescale_y
         df.loc[subject, 'rescale_x'] = rescale_x
 
+        #### Blacken the greenish line at the bottom of the V-T plot.
+        ## Method 1 - Mask cubic region in RGB color space.
+        #lower = np.array([0,  44,  43])
+        #upper = np.array([85, 180, 165])
+        #pixel_data_copy = pixel_data.copy()
+        #green_mask = cv2.inRange(pixel_data_copy, lower, upper)
+
+        ## Method 2 - Use r/b, g/b ratios.
+        # pixel_data is currently in YCbCr format. Get the mask from RGB space.
+        im_rgb = Image.fromarray(pixel_data, mode='YCbCr')
+        im_rgb = im_rgb.convert('RGB')
+        pixel_data_rgb = np.array(im_rgb)
+        
+        r = pixel_data_rgb[:,:,0].astype(float)
+        g = pixel_data_rgb[:,:,1].astype(float)
+        b = pixel_data_rgb[:,:,2].astype(float)
+        rb_ratio_min = 0.0
+        rb_ratio_max = 0.7
+        gb_ratio_min = 1.0
+        gb_ratio_max = 1.4
+        rgb_sum_min  = 50
+        green_mask = (b > 0) & (r/b >= rb_ratio_min) & (r/b < rb_ratio_max) & (g/b > gb_ratio_min) & (g/b < gb_ratio_max) & (r+g+b > rgb_sum_min)
+
+        #pixel_data[green_mask] = [255,0,0] # set masked region to red for inspection
+        pixel_data[green_mask] = 0 # black out masked pixels
+
         im = Image.fromarray(pixel_data, mode='YCbCr')
+        #im = Image.fromarray(pixel_data, mode='RGB')
+
         im = im.convert(out_mode)
         
         out_name = '.'.join(os.path.basename(in_path).split('.')[:-1]) + '.' + out_type

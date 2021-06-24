@@ -126,7 +126,7 @@ def main(seed=489, out_dir='../runs/doppler'):
     shuffle = True
     drop_last = False
     ## Other
-    note = ''
+    note = 'Retry best run for sanity check'
     
     #### Select device.
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
