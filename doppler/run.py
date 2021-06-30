@@ -28,8 +28,10 @@ def train_loop(dataloader, model, loss_fn, optimizer, device, verbose=False, tra
         
         loss = loss_fn(pred, y) # MSE of batch
 
-#        print(y, pred, loss)
-        
+        #print(y, pred, loss)
+
+        #print(X[0].shape, X[0].mean(), X[0].std())
+
         # Backpropagation
         optimizer.zero_grad() # Set the gradients back to zero (from the previous loop?).
         loss.backward() # Compute the gradients.
@@ -115,27 +117,32 @@ def main(seed=489, out_dir='../runs/doppler'):
     ## Model settings:
     freeze_layers = 2 # For resnet18, let's try 0, 2, 5, 6, 7, 8 (want to freeze batch norm layers following each conv layer (I think)
     dropout_rate = 0.0
+
     ## Training loop settings:
     optimizer_name = 'AdamW'
-    learning_rate = 2.5e-4
-    weight_decay = 0.008
-    epochs = 50
-    train_noise = 0.03
+    learning_rate = 2.5e-4 # 2.5e-4 paper
+    weight_decay = 0.008 # 0.008 paper
+    epochs = 50 # 50 paper
+    train_noise = 0.03 # 0.03 paper
+
     ## Dataloader settings:
+    file_list_path = '/hpf/largeprojects/ccmbio/sufkes/echonet_pediatric/data/data_from_sickkids/processed/clinical_data/vti/FileList_vti.csv'
     batch_size = 48
     shuffle = True
     drop_last = False
+    normalize_mode = 'training_set'
+ 
     ## Other
-    note = 'Retry best run for sanity check'
+    note = 'separated peaks, rescaled, normalized using training set mean and std'
     
     #### Select device.
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     #print('Using device:', device)
     
     #### Make datasets.
-    train_dataset = DopplerDataset(split='train')
-    val_dataset = DopplerDataset(split='val')
-    test_dataset = DopplerDataset(split='test')
+    train_dataset = DopplerDataset(split='train', file_list_path=file_list_path, normalize_mode=normalize_mode)
+    val_dataset = DopplerDataset(split='val', file_list_path=file_list_path, normalize_mode=normalize_mode)
+    test_dataset = DopplerDataset(split='test', file_list_path=file_list_path, normalize_mode=normalize_mode)
 
     ## Record the image dimensions.
     dim_x = train_dataset[0][0].shape[1]
@@ -146,7 +153,7 @@ def main(seed=489, out_dir='../runs/doppler'):
                                   batch_size=batch_size,
                                   shuffle=shuffle,
                                   drop_last=drop_last)
-    #print('Warning: Using custom validation method.')
+
     val_dataloader = DataLoader(val_dataset,
                                 batch_size=1, # must be set to one for custom validation loop. Maybe change this back to a separate dataloader.
                                 shuffle=False, # never a point in shuffling the validation set, right?
@@ -164,8 +171,6 @@ def main(seed=489, out_dir='../runs/doppler'):
 
     #### Set model and hyperparameters
     ## Set model.
-    #model = net.DopplerBasic()
-    #model = net.Doppler()
     model = net.myResNet18(freeze_layers=freeze_layers, dropout_rate=dropout_rate)
     model.to(device)
 
@@ -173,7 +178,6 @@ def main(seed=489, out_dir='../runs/doppler'):
     loss_fn = nn.MSELoss()
 
     ## Set optimizer.
-    #optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate)
     optimizers = {'SGD':torch.optim.SGD(model.parameters(), lr=learning_rate),
                   'Adam':torch.optim.Adam(model.parameters(), lr=learning_rate, betas=(0.9, 0.999), eps=1e-08, weight_decay=weight_decay, amsgrad=False),
                   'AdamW':torch.optim.AdamW(model.parameters(), lr=learning_rate, betas=(0.9, 0.999), eps=1e-08, weight_decay=weight_decay, amsgrad=False)}
@@ -185,7 +189,6 @@ def main(seed=489, out_dir='../runs/doppler'):
     loss_df.index.name = 'epoch'
     
     #### Training and validation loop
-    print('Warning: Using custom validation method')
     val_mean_loss_min = np.inf
     for t in range(epochs):
         #print(f"Epoch {t+1}\n-------------------------------")
@@ -232,6 +235,7 @@ def main(seed=489, out_dir='../runs/doppler'):
     hyper_df.loc[hyper_df.index[-1], 'batch_size'] = batch_size
     hyper_df.loc[hyper_df.index[-1], 'shuffle'] = shuffle
     hyper_df.loc[hyper_df.index[-1], 'drop_last'] = drop_last
+    hyper_df.loc[hyper_df.index[-1], 'normalize_mode'] = normalize_mode
     hyper_df.loc[hyper_df.index[-1], 'optimizer'] = optimizer_name
     hyper_df.loc[hyper_df.index[-1], 'freeze_layers'] = freeze_layers
     hyper_df.loc[hyper_df.index[-1], 'dropout_rate'] = dropout_rate
@@ -257,7 +261,7 @@ def main(seed=489, out_dir='../runs/doppler'):
     dataset_dict = {}
     dataset_dict['train'] = train_dataset
     dataset_dict['val'] = val_dataset
-    dataset_dict['test'] = test_dataset
+    #dataset_dict['test'] = test_dataset
 
     model.eval()
     with torch.no_grad():
