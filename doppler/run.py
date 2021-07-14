@@ -120,10 +120,10 @@ def main(seed=489, out_dir='../runs/doppler'):
 
     ## Training loop settings:
     optimizer_name = 'AdamW'
-    learning_rate = 2.5e-4 # 2.5e-4 paper
+    learning_rate = 3.0e-4 # 2.5e-4 paper
     weight_decay = 0.008 # 0.008 paper
-    epochs = 50 # 50 paper
-    train_noise = 0.03 # 0.03 paper
+    epochs = 200 # 50 paper
+    train_noise = 0.0 # 0.03 paper
 
     ## Dataloader settings:
     file_list_path = '/hpf/largeprojects/ccmbio/sufkes/echonet_pediatric/data/data_from_sickkids/processed/clinical_data/vti/FileList_vti.csv'
@@ -133,7 +133,7 @@ def main(seed=489, out_dir='../runs/doppler'):
     normalize_mode = 'training_set'
  
     ## Other
-    note = 'separated peaks, rescaled, normalized using training set mean and std'
+    note = 'redo best paper run - will likely be different result due to changes in normalization method'
     
     #### Select device.
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')

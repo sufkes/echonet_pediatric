@@ -23,7 +23,7 @@ def sort_id_key_vectorized(subject_series, subject_prefix='VTI'):
     sort_values = [sort_id_key(subject) for subject in subject_series] # list of (unsorted) numbers whose values will determine ordering of the rows.
     return sort_values
 
-def main(dicom_in_dir, patient_data_path, split_path, image_out_dir, file_list_out_path, out_color_mode, out_image_type, new_height, new_width, pad, rescale, remove_green_line, split_peaks):
+def main(dicom_in_dir, patient_data_path, split_path, image_out_dir, file_list_out_path, out_color_mode, out_image_type, new_height, new_width, pad, rescale, remove_green_line, split_peaks, save_copy_for_annotation):
     #### Generate a dataframe storing data with one row for each patient.
     patient_df = pd.read_csv(patient_data_path)
     split_df = pd.read_csv(split_path)
@@ -46,9 +46,6 @@ def main(dicom_in_dir, patient_data_path, split_path, image_out_dir, file_list_o
     # Find the DICOM files.
     dicom_in_paths = glob(dicom_in_dir + '/*')
     dicom_in_paths.sort()
-
-    # Create directory in which to save processed PNG images.
-    os.makedirs(image_out_dir, exist_ok=True)
 
     # Store all pixels in the training set; use to determine mean and standard deviation of training set later.
     train_pixels_all = []
@@ -172,26 +169,42 @@ def main(dicom_in_dir, patient_data_path, split_path, image_out_dir, file_list_o
             df.loc[subject_new, 'rescale_y'] = rescale_y
             df.loc[subject_new, 'rescale_x'] = rescale_x
             
-            ## Save the preprocessed image.
+            ## Save the preprocessed image and associated data.
             im = Image.fromarray(pixel_data_ycbcr, mode='YCbCr') # Assume DICOM pixel array is YCbCr format.
             im = im.convert(out_color_mode) # convert to greyscale or RGB
-
+            if save_copy_for_annotation:
+                im_annotated = Image.fromarray(pixel_data_ycbcr, mode='YCbCr')
+                # Convert pixels to greyscale, then back to RGB, so that the output image is greyscale, but we can annotate in red.
+                im_annotated = im.convert('L')
+                im_annotated = im.convert('RGB')
+                image_out_dir_annotated = image_out_dir + '-annotated'
+                
+            
             # Record the mean and standard deviation over the training set. Should be done differently if using multiple color channels
             if base_df.loc[subject, 'split_all_random'] == 'train':
                 pixels_flat = np.array(im).flatten()
                 train_pixels_all.extend(pixels_flat)
                 train_set_size += 1
-            
+
+
+            # Set file paths and save.
             if split_peaks:
-                out_name = '.'.join(os.path.basename(in_path).split('.')[:-1]) + '_' + str(image_num) + '.' + out_image_type # <old name>.png 
+                out_name = '.'.join(os.path.basename(in_path).split('.')[:-1]) + '_' + str(image_num) + '.' + out_image_type # <old name>.png
             else:
                 out_name = '.'.join(os.path.basename(in_path).split('.')[:-1]) + '.' + out_image_type # <old name>.png
             out_path = os.path.join(image_out_dir, out_name)
+            os.makedirs(image_out_dir, exist_ok=True)
             im.save(out_path)
+            if save_copy_for_annotation:
+                out_path_annotated = os.path.join(image_out_dir_annotated, out_name)
+                os.makedirs(image_out_dir_annotated, exist_ok=True)
+                im_annotated.save(out_path_annotated)
 
             # Save processed image path to dataframe.
             df.loc[subject_new, 'FilePath'] = os.path.abspath(out_path)
-            
+            if save_copy_for_annotation:
+                df.loc[subject_new, 'FilePath_annotated'] = os.path.abspath(out_path_annotated)
+                
             ## Get the final scaling factor for each row.
             # True VTI (cm) = (# processed pixels) * rescale_x * rescale_y * PhysicalDeltaX * PhysicalDeltaY
             #               = (# processed pixels) * pixel_scale_factor
@@ -441,7 +454,9 @@ if __name__ == '__main__':
     parser.add_argument('-s', '--split_peaks',
                         action='store_true',
                         help='remove solid green-blue line at bottom of V-T plot')
-    
+    parser.add_argument('-a', '--save_copy_for_annotation',
+                        help='save a second copy of the processed image to be annotated; add column in the file list to record the path of the annotation copy',
+                        action='store_true')    
 
     # Parse arguments.
     args = parser.parse_args()
