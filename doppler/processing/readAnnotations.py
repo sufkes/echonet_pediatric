@@ -31,11 +31,11 @@ Returns:
         
     line = (r>g) & (r>b) # booleans
 
-    peak = np.argmax(line, axis=0) # vertical axis values of peak
+    peak = np.argmax(line, axis=0).astype(np.float32) # vertical axis values of peak
     
     return peak
     
-def main(file_list_in_path_rescale, file_list_in_path_pad, out_dir, in_color_mode):
+def main(file_list_in_path_rescale, file_list_in_path_pad, out_dir, in_color_mode, make_plots):
     ## Read data sheets.
     df_rescale = pd.read_csv(file_list_in_path_rescale)
     df_pad = pd.read_csv(file_list_in_path_pad)
@@ -63,7 +63,8 @@ def main(file_list_in_path_rescale, file_list_in_path_pad, out_dir, in_color_mod
 
         interpolater = interpolate.interp1d(x_range_compressed, peak_rescale * old_height / new_height, fill_value=0, bounds_error=False) # returns a function used to map the peak shape defined in the rescaled image to the peak shape in the padded image, with zeros in the zero-padded region, per the fill_value and bounds_error arguments.
         peak_pad = interpolater(x_range) # values for the peak in the padded image, in the space of the padded image
-
+        peak_pad = peak_pad.astype(np.float32)
+        
         ## Statistics
         vti_px_img_rescale = peak_rescale.sum() # VTI in units of pixels as measured by the annotation on the rescaled image.
         if vti_px_img_rescale == 0: # if this image was not annotated
@@ -99,11 +100,12 @@ def main(file_list_in_path_rescale, file_list_in_path_pad, out_dir, in_color_mod
         df_rescale.loc[index, 'peak_array_path'] = out_path_rescale
         file_list_out_path_rescale = file_list_in_path_rescale.replace('.csv', '-with_peak_arrays.csv')
         df_rescale.to_csv(file_list_out_path_rescale, index=False)
-        plt.figure()
-        plt.plot(peak_rescale)
-        plt.savefig(os.path.join(out_dir_rescale, img_path_basename))
-        plt.close()
-        
+        if make_plots:
+            plt.figure()
+            plt.plot(peak_rescale)
+            plt.savefig(os.path.join(out_dir_rescale, img_path_basename))
+            plt.close()
+            
         out_dir_pad = out_dir+'-pad'
         os.makedirs(out_dir_pad, exist_ok=True)
         out_name_pad = img_path_basename.replace('.png', '.npy')
@@ -112,10 +114,11 @@ def main(file_list_in_path_rescale, file_list_in_path_pad, out_dir, in_color_mod
         df_pad.loc[index, 'peak_array_path'] = out_path_pad
         file_list_out_path_pad = file_list_in_path_pad.replace('.csv', '-with_peak_arrays.csv')
         df_pad.to_csv(file_list_out_path_pad, index=False)
-        plt.figure()
-        plt.plot(peak_pad)
-        plt.savefig(os.path.join(out_dir_pad, img_path_basename))
-        plt.close()
+        if make_plots:
+            plt.figure()
+            plt.plot(peak_pad)
+            plt.savefig(os.path.join(out_dir_pad, img_path_basename))
+            plt.close()
 
     # Compare VTI obtained from annotations to ground truth.
     print('Individual peaks:')
@@ -164,7 +167,10 @@ This script assumes that annotations were made to peak images which were all res
                         type=str,
                         help='input color mode; expect a greyscale image with RGB encoding, and with a red line bordering the modal velocity peak',
                         default='RGB')    
-
+    parser.add_argument('-p', '--make_plots',
+                        action='store_true',
+                        help='save plots of peak curves')
+    
     # Parse arguments.
     args = parser.parse_args()
 

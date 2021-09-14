@@ -41,16 +41,16 @@ class Doppler(nn.Module):
 # https://github.com/pytorch/vision/blob/master/torchvision/models/resnet.py
 from torchvision.models.resnet import resnet18
 #model = resnet18()
-def myResNet18(freeze_layers=None, dropout_rate=0, pretrained=True):
+def myResNet18(freeze_layers=None, dropout_rate=0, pretrained=True, out_features=1):
     model = resnet18(pretrained=pretrained)
-    num_features = model.fc.in_features
+    fc_in_features = model.fc.in_features
     if dropout_rate:
         model.fc = nn.Sequential(
             nn.Dropout(dropout_rate),
-            nn.Linear(num_features, 1),
+            nn.Linear(fc_in_features, out_features),
         )
     else:
-        model.fc = nn.Linear(num_features, 1)
+        model.fc = nn.Linear(fc_in_features, out_features)
 
     if freeze_layers:
         for layer in list(model.children())[:freeze_layers]:

@@ -21,17 +21,14 @@ class DopplerDataset(Dataset):
                  target_transform = None,
                  file_list_path = '/hpf/largeprojects/ccmbio/sufkes/echonet_pediatric/data/data_from_sickkids/processed/clinical_data/vti/FileList_vti.csv',
                  split_col = 'split_all_random',
-                 file_path_col = 'FilePath'
+                 file_path_col = 'FilePath',
+                 downscale_y = 10000 # divide return number of pixels by this number to avoid (overflow errors? nonconverging loss?). In early tests predicting the raw number of pixels, the loss would not converge. Dividing by a large number seemed to fix the problem.
     ):
         
         data_df = pd.read_csv(file_list_path)
         data_df = data_df.loc[data_df[split_col] == split, :] # only the portion of the dataframe with the requested split (i.e. separate dataframes for training and validation sets)
         data_df.reset_index(drop=True, inplace=True)
         self.data_df = data_df
-
-        # Read the mean and standard deviation of the training set from the spreadsheet.
-        self.train_mean = data_df.loc[data_df.index[0], 'train_mean'] / 255 # need value in range [0, 1]
-        self.train_std = data_df.loc[data_df.index[0], 'train_std'] / 255 # need value in range [0, 1]
         
         self.split = split
         self.target_type = target_type
@@ -42,6 +39,10 @@ class DopplerDataset(Dataset):
             ])
         elif normalize_mode == 'training_set':
 
+            # Read the mean and standard deviation of the training set from the spreadsheet.
+            self.train_mean = data_df.loc[data_df.index[0], 'train_mean'] / 255 # need value in range [0, 1]
+            self.train_std = data_df.loc[data_df.index[0], 'train_std'] / 255 # need value in range [0, 1]
+            
             self.transform = transforms.Compose([
                 transforms.Grayscale(num_output_channels=3),
                 transforms.ToTensor(),
@@ -61,17 +62,26 @@ class DopplerDataset(Dataset):
         self.file_list_path = file_list_path
         self.split_col = split_col
         self.file_path_col = file_path_col
-        self.downscale_y = 10000
+        if target_type == 'AOVTI_px':
+            self.downscale_y = downscale_y
 
     def __getitem__(self, index):
+        # Get input
         img_path = self.data_df.loc[index, self.file_path_col]
         img = Image.open(img_path) # PIL image
-        target = self.data_df.loc[index, self.target_type]
         if self.transform:
             img = self.transform(img)
-        if self.target_transform:
-            target = self.target_transform(target)
-        target = target/self.downscale_y
+
+        # Get output
+        if self.target_type == 'peak_array':
+            peak_array_path = self.data_df.loc[index, 'peak_array_path']
+            target = np.load(peak_array_path)
+        else:
+            target = self.data_df.loc[index, self.target_type]
+            if self.target_transform:
+                target = self.target_transform(target)
+            if self.target_type == 'AOVTI_px':
+                target = target/self.downscale_y # scale down the value because it is ~1e4.
         return img, target
 
     def __len__(self):

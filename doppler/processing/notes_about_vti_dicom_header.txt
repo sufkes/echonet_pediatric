@@ -1,0 +1,41 @@
+Notes about VTI DICOM headers
+• Information about the Doppler VTI image is read from the DICOM header. The VTI sequence data is stored in DICOM tag "(0018,6011) SequenceOfUltrasoundRegions".
+• Tag (0018,6011) is a sequence containing items (usually 3?), each of which contain a list of values.
+• Information about the VT profile portion of the Doppler images appears to consistently be stored in the second item of sequence (0018, 6011).
+  • This is true for all but 3 of the images we currently have (2021-08-13)
+• The following tags are from the second item of sequence (0018, 6011) are used:
+  • (0018,6018) RegionLocationMinX0
+    ○ This value indicates the column from the left of the Doppler image at which the VT plot begins.
+    ○ This value is 50 in all images.
+  • (0018,601a) RegionLocationMinY0
+    ○ This value indicates the row from the top of the Doppler image at which the VT plot begins.
+    ○ This value is 212 in all images.
+  • (0018,601c) RegionLocationMaxX1
+    ○ This value seems to indicate the column from the left of the Doppler image at which the VT plot ends. However, in VT plots which contain blacked out regions with no signal, this value seems to indicate the first pixel from the left which is blacked out.
+    ○ This value is usually 913, except in images with blacked out pixels, as described in the previous bullet. It is <= 913 in all images.
+    ○ Since this value is sometimes <913, even though the plot areas seem to consistently extend to pixel 913, I have always extracted pixels with x values between 50 and 913, regardless of this value.
+  • (0018,601e) RegionLocationMaxY1
+    ○ This value indicates the row from the top of the Doppler image at which the VT plot ends.
+    ○ This value is 671 in all images.
+  • (0018,6020) ReferencePixelX0
+    ○ This value seems to indicate the number of columns in the VT portion of the Doppler image. However, if the VT plot contains blacked out regions, it seems to indicate the number of columns starting from the left of the VT plot, up to the first blacked out column.
+    ○ This value is always RegionLocationMaxX1 - RegionLocationMinX0 + 1
+    ○ This value is usually 864, unless there are blacked out regions.
+    ○ This value is not used in the preprocessing script.
+  • (0018,6022) ReferencePixelY0
+    ○ This pixel seems to indicate the number of columns from the top of the VT portion of the Doppler image at which the horizontal axis lies (i.e. where velocity = 0).
+    ○ This takes on a range of value, but correctly locates the horizontal axis in all images.
+  • (0018,6024) PhysicalUnitsXDirection
+    ○ This tag indicates the physical units of the horizontal axis.
+    ○ It is 4 (indicating "seconds") in all images.
+  • (0018,6026) PhysicalUnitsYDirection
+    ○ This tag indicates the physical units of the vertical axis.
+    ○ It is 7 (indicating "cm/s") in all images.
+  • (0018,602c) PhysicalDeltaX
+    ○ This tag indicates the number of physical units to which the horizontal width of a pixel equals.
+    ○ This value differs between images.
+    ○ This value is very important, as it is used to calculate the VTI value from the image.
+  • (0018,602e) PhysicalDeltaY
+    ○ This tag indicates the number of physical units to which the vertical height of a pixel equals.
+    ○ This value differs between images.
+    ○ This value is very important, as it is used to calculate the VTI value from the image.

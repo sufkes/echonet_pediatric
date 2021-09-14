@@ -10,6 +10,7 @@ import cv2
 from glob import glob
 from PIL import Image
 from skimage.color import rgb2gray
+import warnings
 
 def sort_id_key_vectorized(subject_series, subject_prefix='VTI'):
     """Special subject ID sorter"""
@@ -19,9 +20,13 @@ def sort_id_key_vectorized(subject_series, subject_prefix='VTI'):
         else:
             val = int(subject.split(subject_prefix[-1])[-1])
         return val
-        
-    sort_values = [sort_id_key(subject) for subject in subject_series] # list of (unsorted) numbers whose values will determine ordering of the rows.
+    try:
+        sort_values = [sort_id_key(subject) for subject in subject_series] # list of (unsorted) numbers whose values will determine ordering of the rows.
+    except:
+        warnings.warn('Failed to sort IDs')
+        sort_values = list(subject_series)
     return sort_values
+        
 
 def main(dicom_in_dir, patient_data_path, split_path, image_out_dir, file_list_out_path, out_color_mode, out_image_type, new_height, new_width, pad, rescale, remove_green_line, split_peaks, save_copy_for_annotation):
     #### Generate a dataframe storing data with one row for each patient.
@@ -41,7 +46,6 @@ def main(dicom_in_dir, patient_data_path, split_path, image_out_dir, file_list_o
     # Set index to the subject column.
     base_df.set_index('Subject', drop=True, inplace=True) # one row per subject
     
-    
     #### Process DICOM files.
     # Find the DICOM files.
     dicom_in_paths = glob(dicom_in_dir + '/*')
@@ -59,7 +63,9 @@ def main(dicom_in_dir, patient_data_path, split_path, image_out_dir, file_list_o
         
         # Add DICOM path to dataframe.
         subject = os.path.basename(in_path).split('.')[0]
+        #print(base_df)
         base_df.loc[subject, 'DicomFilePath'] = os.path.abspath(in_path)
+        #print(base_df)
 
         # Load the image
         dicom = pydicom.dcmread(in_path)
@@ -78,11 +84,20 @@ def main(dicom_in_dir, patient_data_path, split_path, image_out_dir, file_list_o
         # Most images have the V-T graph within bounds (50, 913, 212, 671). It looks like some are a smaller area within this box, but none appear to extend beyond it.
         # The ReferencePixelY0 DICOM tag indicates the pixel where the horizontal axis lies. We can cut off everything above this.
         # Cropping does not affect scaling.
-        left = 50
-        right = 913
-        top = 212 # top of the V-T plot.
-        top += int(base_df.loc[subject, 'ReferencePixelY0']) # horizontal axis of V-T plot
-        bottom = 671
+        # For some reason, I had the values hard-coded instead of being read from the files. I will read from the headers instead.
+        left = vt_seq[(0x0018, 0x6018)].value # Region Location Min X0
+        right = vt_seq[(0x0018, 0x601c)].value # Region Location Max X1
+        if right != 913:
+            warnings.warn('RegionLocationMaxX1 has value other than 913. This may be because part of the VT plot is blacked out. Assuming the right edge of the VT plot occurs at column 913, and ignoring the value of RegionLocationMaxX1.')
+            right = 913
+        top = vt_seq[(0x0018, 0x601a)].value # Region Location Min Y0
+        top += vt_seq[(0x0018, 0x6022)].value # Reference Pixel Y0
+        bottom = vt_seq[(0x0018, 0x601e)].value # Region Location Max Y1
+        #left = 50
+        #right = 913
+        #top = 212 # top of the V-T plot.
+        #top += int(base_df.loc[subject, 'ReferencePixelY0']) # horizontal axis of V-T plot
+        #bottom = 671
         pixel_data_ycbcr = pixel_data_ycbcr[top:bottom+1, left:right+1, :]
 
         base_df.loc[subject, 'left'] = left
@@ -456,7 +471,7 @@ if __name__ == '__main__':
                         help='remove solid green-blue line at bottom of V-T plot')
     parser.add_argument('-a', '--save_copy_for_annotation',
                         help='save a second copy of the processed image to be annotated; add column in the file list to record the path of the annotation copy',
-                        action='store_true')    
+                        action='store_true')
 
     # Parse arguments.
     args = parser.parse_args()

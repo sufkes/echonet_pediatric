@@ -78,9 +78,7 @@ class Echo(torch.utils.data.Dataset):
                  split_col='Split', # Column in FileList.csv to assign splits from.
                  rotate180=False # Whether to rotate the image 180 degrees; try because it looks like our images are rotated relative to the EchoNet Dynamic dataset.
                  ):
-
-
-
+                 
         if root is None:
             root = echonet.config.DATA_DIR
         self.folder = pathlib.Path(root)
