@@ -104,7 +104,7 @@ def get_mean_and_std(dataset: torch.utils.data.Dataset,
     n = 0  # number of elements taken (should be equal to samples by end of for loop)
     s1 = 0.  # sum of elements along channels (ends up as np.array of dimension (channels,))
     s2 = 0.  # sum of squares of elements along channels (ends up as np.array of dimension (channels,))
-    for (x, *_) in tqdm.tqdm(dataloader):
+    for (x, *_) in tqdm.tqdm(dataloader, disable=True):
         x = x.transpose(0, 1).contiguous().view(3, -1)
         n += x.shape[1]
         s1 += torch.sum(x, dim=1).numpy()

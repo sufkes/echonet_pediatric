@@ -28,8 +28,13 @@ import os
 #out_dir = '/hpf/largeprojects/ccmbio/sufkes/echonet_pediatric/data/data_from_sickkids/raw/test_new_data_july_30/4c/processed'
 
 # LVOT
-in_file_glob_string = '/hpf/largeprojects/ccmbio/sufkes/echonet_pediatric/data/data_from_sickkids/raw/test_new_data_july_30/lvot/raw/*.dcm'
-out_dir = '/hpf/largeprojects/ccmbio/sufkes/echonet_pediatric/data/data_from_sickkids/raw/test_new_data_july_30/lvot/processed'
+#in_file_glob_string = '/hpf/largeprojects/ccmbio/sufkes/echonet_pediatric/data/data_from_sickkids/raw/test_new_data_july_30/lvot/raw/*.dcm'
+#out_dir = '/hpf/largeprojects/ccmbio/sufkes/echonet_pediatric/data/data_from_sickkids/raw/test_new_data_july_30/lvot/processed'
+
+
+## Neonates 4C
+in_file_glob_string = '/hpf/largeprojects/ccmbio/sufkes/echonet_pediatric/data/data_from_sickkids/raw/neonates_20220329/4c/known/*.dcm'
+out_dir = '/hpf/largeprojects/ccmbio/sufkes/echonet_pediatric/data/data_from_sickkids/processed/echo_data/4c-neonates_20220329-no_mask'
 
 
 in_files = sorted(glob(in_file_glob_string))

@@ -3,14 +3,20 @@
 import os
 import sys
 import argparse
+import warnings
+warnings.simplefilter('once')
 import pandas as pd
 import pydicom
 import numpy as np
+np.seterr(all='ignore') # Ignore division by zero warning here. It works properly given tne b > 0 condition.
 import cv2
 from glob import glob
 from PIL import Image
-from skimage.color import rgb2gray
-import warnings
+from skimage.color import rgb2gray # I should remove this dependency and just convert using PIL
+#from scipy import interpolate
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 
 def sort_id_key_vectorized(subject_series, subject_prefix='VTI'):
     """Special subject ID sorter"""
@@ -26,55 +32,140 @@ def sort_id_key_vectorized(subject_series, subject_prefix='VTI'):
         warnings.warn('Failed to sort IDs')
         sort_values = list(subject_series)
     return sort_values
-        
 
-def main(dicom_in_dir, patient_data_path, split_path, image_out_dir, file_list_out_path, out_color_mode, out_image_type, new_height, new_width, pad, rescale, remove_green_line, split_peaks, save_copy_for_annotation):
+def readAnnotation(annotation_path):
+    '''Read the vertical axis values of the modal-velocity curve. Horizontal positions with no peak marker will be assumed to not lie within the peak region, and will be assigned vertical positions 0. 
+Parameters: 
+    annotation_path (str): path to input image with peak marked in red
+Returns: 
+    peak (numpy.array): vector of length equal to horizontal length of input image, containing the vertical position of the modal velocity curve; down is treated as the positive direction.'''
+
+    annotation = Image.open(annotation_path)
+    pixel_data = np.array(annotation) # image is RGB-encoded, but all pixels will have R==G==B, except the line marking the peak.
+            
+    r = pixel_data[..., 0] # red component
+    g = pixel_data[..., 1] # green
+    b = pixel_data[..., 2] # blue
+        
+    redmap = (r>g) & (r>b) # booleans
+
+    # There must be a slick way to find, for each column, the highest index of the nonzero pixels, but I couldn't find one, and this works fine.
+    peak = np.zeros(pixel_data.shape[1])
+    for x in range(redmap.shape[1]):
+        maximum = 0
+        for y in range(redmap.shape[0]):
+            if redmap[y,x]:
+                maximum = y
+        peak[x] = maximum
+    #peak = np.argmax(redmap, axis=0).astype(np.float32) # old way that I didn't think through and still mostsly worked, but with strange artifacts
+
+    # Debug
+    #redzone = np.zeros(redmap.shape)
+    #redzone[redmap] = 1
+    #plt.figure()
+    #plt.axis('off')
+    #plt.imshow(redzone, cmap='gray', interpolation='none')
+    #plt.plot(peak, color='red', alpha=0.7)
+    #plt.savefig(os.path.join('/hpf/largeprojects/ccmbio/sufkes/echonet_pediatric/data/data_from_sickkids/processed/echo_data/vti_camerons_annotations-split_peaks-417x286-rescale-extracted_annotations', os.path.basename(annotation_path).replace('.png', '-redzone.png')), bbox_inches='tight', pad_inches=0)
+    #plt.close()
+    
+    return peak
+
+def getGroundTruthVti(annotation):
+    vti_list = []
+    vti = 0
+    for ii, val in enumerate(annotation):
+        vti += val
+        if (vti > 0) and ((val == 0) or (ii == len(annotation)-1)): # if at each of an annotated peak
+            vti_list.append(vti)
+            vti = 0
+    vti_px = np.mean(np.array(vti_list))
+    return vti_px
+
+def main(dicom_in_dir, patient_data_path, split_path, image_out_dir, file_list_out_path, out_color_mode, out_image_type, new_height, new_width, pad, rescale, remove_green_line, split_peaks, save_copy_for_annotation, read_annotations, annotations_in_dir, num_annotated_peaks_path):
     #### Generate a dataframe storing data with one row for each patient.
     patient_df = pd.read_csv(patient_data_path)
     split_df = pd.read_csv(split_path)
-    split_df = split_df[['id_VTI', 'split_VTI']]
+    if read_annotations:
+        split_col = 'split_VTI_annotation'
+    else:
+        split_col = 'split_VTI'
+    split_df = split_df[['id_VTI', split_col]]
+    # Drop rows lacking a split value.
+    split_df.drop(split_df[split_df[split_col].isna()].index, inplace=True)
 
-    # Combine dataframes into one.
-    base_df = patient_df.merge(split_df, left_on='Subject', right_on='id_VTI', how='inner') # inner merge to drop subjects without patient data or train/val/test assignment.
-
-    # Drop columns.
-    base_df.drop(columns='id_VTI', inplace=True)
-    
     # Rename the split column.
-    base_df.rename(columns={'split_VTI':'split_all_random'}, inplace=True)
+    split_df.rename(columns={split_col:'split_all_random'}, inplace=True)
+    
+    # Combine dataframes into one. patient_df contains VTI values from Mael; there are subjects with annotations by Cameron which do not have corresponding VTI values from Mael.
+    #base_df = patient_df.merge(split_df, left_on='Subject', right_on='id_VTI', how='right') # right merge to drop subjects without patient data or train/val/test assignment.
+    base_df = split_df.merge(patient_df, right_on='Subject', left_on='id_VTI', how='left') # left merge to drop subjects without patient data or train/val/test assignment.
+    
+    # Drop columns.
+    base_df.drop(columns='Subject', inplace=True) # Drop 'Subject' column taken from the original patient_df, which may be missing rows for some patients.
+
+    # Rename the subject column taken from split_df, which should have a row for all included patients.
+    base_df.rename(columns={'id_VTI':'Subject'}, inplace=True)
+
+    # Add the number of peaks annotated by Cameron if reading annotations.
+    if read_annotations:
+        num_peaks_df = pd.read_csv(num_annotated_peaks_path)
+        base_df = base_df.merge(num_peaks_df, on='Subject', how='left')
+        #base_df.drop(columns='Subject', inplace=True)
+
 
     # Set index to the subject column.
     base_df.set_index('Subject', drop=True, inplace=True) # one row per subject
-    
+
     #### Process DICOM files.
     # Find the DICOM files.
     dicom_in_paths = glob(dicom_in_dir + '/*')
     dicom_in_paths.sort()
 
+    # Find the annotations files.
+    if read_annotations:
+        annotations_in_paths = glob(annotations_in_dir + '/*')
+        annotations_in_paths.sort()
+    
     # Store all pixels in the training set; use to determine mean and standard deviation of training set later.
     train_pixels_all = []
     train_set_size = 0
+
+    # Keep track of the number of peaks extracted, and the number of peaks annotated.
+    if read_annotations and split_peaks:
+        total_peaks_extracted = 0
+        total_peaks_annotated = 0
     
     ## Loop over the DICOM files.
     first_subject = True # If this is the first subject in the list.
     for ii, in_path in enumerate(dicom_in_paths):
-        print(f'Processing {in_path}')
-        
         if not in_path.lower().endswith('.dcm'):
             continue
         
         # Add DICOM path to dataframe.
         subject = os.path.basename(in_path).split('.')[0]
         #print(base_df)
+
+        # Load the corresponding annotation file.
+        if read_annotations:
+            annotation_name = subject + '.png'
+            annotation_path = os.path.join(annotations_in_dir, annotation_name)
+            if not os.path.isfile(annotation_path):
+                continue
+            else:
+                annotation = readAnnotation(annotation_path) # 1D numpy array with length equal to the width of the VTI plot.
+        else:
+            annotation = None
+
         base_df.loc[subject, 'DicomFilePath'] = os.path.abspath(in_path)
-        #print(base_df)
+        if read_annotations:
+            base_df.loc[subject, 'AnnotationFilePath'] = os.path.abspath(annotation_path)
 
         # Load the image
         dicom = pydicom.dcmread(in_path)
-        print('Warning: 2022-04-01: Some image may have PhotometricInterpretation=RGB, rather than YCbCr. You should add a check and handle this case.')
         pixel_data_ycbcr = dicom.pixel_array
-
-        # Get information from DICOM header.
+        
+        # Get information from DICOM header, including the physical meaning of units along the x and y axes. 
         try:
             vt_seq = dicom[(0x0018,0x6011)][1] # DICOM sequence tag for the VT plot
             for line in dicom[(0x0018,0x6011)][1]:
@@ -103,6 +194,10 @@ def main(dicom_in_dir, patient_data_path, split_path, image_out_dir, file_list_o
         #bottom = 671
         pixel_data_ycbcr = pixel_data_ycbcr[top:bottom+1, left:right+1, :]
 
+        if read_annotations:
+            if pixel_data_ycbcr.shape[1] != len(annotation):
+                raise Exception('Width of annotation file does not match width of VTI plot extracted from Doppler image.')
+
         base_df.loc[subject, 'left'] = left
         base_df.loc[subject, 'right'] = right
         base_df.loc[subject, 'top'] = top
@@ -124,25 +219,33 @@ def main(dicom_in_dir, patient_data_path, split_path, image_out_dir, file_list_o
             gb_ratio_max = 1.4
             rgb_sum_min  = 50
             green_mask = (b > 0) & (r/b >= rb_ratio_min) & (r/b < rb_ratio_max) & (g/b > gb_ratio_min) & (g/b < gb_ratio_max) & (r+g+b > rgb_sum_min)
-            
             pixel_data_ycbcr[green_mask] = 0 # black out masked pixels
 
-
+        ## Get the ground truth VTI value from the annotated image. This is the mean of the VTI's for each annotated peak, regardless of whether the peaks are identified by the getPeaks method later.
+        if read_annotations:
+            vti_ground_truth_px = getGroundTruthVti(annotation)
+            vti_ground_truth = base_df.loc[subject, 'PhysicalDeltaX'] * base_df.loc[subject, 'PhysicalDeltaY'] * vti_ground_truth_px # ground truth VTI in cm.
+            base_df.loc[subject, 'AOVTI_annotation_px_original'] = vti_ground_truth_px
+            base_df.loc[subject, 'AOVTI_annotation'] = vti_ground_truth
+            
         ## Generate a list of preprocessed sub-images if splitting image into pieces.
         if split_peaks:
-            image_list = getPeaks(pixel_data_ycbcr, pad, rescale, new_height, new_width)
+            image_list, annotation_list = getPeaks(pixel_data_ycbcr, annotation)
         else:
             image_list = [pixel_data_ycbcr]
+            annotation_list = [annotation]
 
-            
+
         #### Continue processing and save each sub-image in the list.
         ## If this is the first subject, create a new dataframe to store one row per sub-image, derived from the dataframe storing one row per subjuect.
         if first_subject:
             df = pd.DataFrame(columns=base_df.columns) # one row per sub-image
-            df.index.name = 'Subject'            
+            df.index.name = 'Subject'
             first_subject = False
-            
-        for image_num, pixel_data_ycbcr in enumerate(image_list, 1):
+
+        if read_annotations:
+            num_peaks_annotated = 0 # keep track of the number of extracted peaks which were annotated by Cameron.
+        for image_num, (pixel_data_ycbcr, annotation) in enumerate(zip(image_list, annotation_list), 1):
             ## Add row in new dataframe.
             if split_peaks:
                 subject_new = subject+'_'+str(image_num)
@@ -151,12 +254,15 @@ def main(dicom_in_dir, patient_data_path, split_path, image_out_dir, file_list_o
 
             ## Copy base row; replace subject name 
             df.loc[subject_new, :] = base_df.loc[subject]
+            df.loc[subject_new, 'Subject_base'] = subject
 
             
             #### Resize the image (rescale or pad) if requested.
             ## Store original shape of the cropped region.
-            df.loc[subject_new, 'old_height'] = pixel_data_ycbcr.shape[0]
-            df.loc[subject_new, 'old_width'] = pixel_data_ycbcr.shape[1]
+            old_height = pixel_data_ycbcr.shape[0]
+            old_width = pixel_data_ycbcr.shape[1]
+            df.loc[subject_new, 'old_height'] = old_height
+            df.loc[subject_new, 'old_width'] = old_width
             
             ## Pad
             if pad:
@@ -169,6 +275,11 @@ def main(dicom_in_dir, patient_data_path, split_path, image_out_dir, file_list_o
                 new = np.zeros((new_height, new_width, 3), dtype=pixel_data_ycbcr.dtype)
                 new[:pixel_data_ycbcr.shape[0], :pixel_data_ycbcr.shape[1], :] = pixel_data_ycbcr
                 pixel_data_ycbcr = new
+
+                if read_annotations:
+                    new_annotation = np.zeros((new_width,), dtype=annotation.dtype)
+                    new_annotation[:annotation.shape[0]] = annotation
+                    annotation = new_annotation
                 
             ## Rescale
             elif rescale:
@@ -177,6 +288,15 @@ def main(dicom_in_dir, patient_data_path, split_path, image_out_dir, file_list_o
                 rescale_x = pixel_data_ycbcr.shape[1]/new_width
                 
                 pixel_data_ycbcr = cv2.resize(pixel_data_ycbcr, (new_width, new_height), interpolation=cv2.INTER_LINEAR) # not sure what interpolation would be best here
+
+                # Rescale the annotation.
+                x_range_old = np.arange(old_width, dtype=float)
+                x_range_new = np.arange(new_width, dtype=float) * old_width/new_width
+#                interpolator = interpolate.interp1d(x_range_old, annotation, fill_value=0, bounds_error=False)
+#                annotation = interpolator(x_range_new).astype(np.float32)
+                annotation = np.interp(x_range_new, x_range_old, annotation)
+                annotation = new_height/old_height*annotation
+                
             else:
                 rescale_y = 1
                 rescale_x = 1
@@ -195,15 +315,7 @@ def main(dicom_in_dir, patient_data_path, split_path, image_out_dir, file_list_o
                 # Convert pixels to greyscale, then back to RGB, so that the output image is greyscale, but we can annotate in red.
                 im_annotated = im.convert('L')
                 im_annotated = im.convert('RGB')
-                image_out_dir_annotated = image_out_dir + '-annotated'
-                
-            
-            # Record the mean and standard deviation over the training set. Should be done differently if using multiple color channels
-            if base_df.loc[subject, 'split_all_random'] == 'train':
-                pixels_flat = np.array(im).flatten()
-                train_pixels_all.extend(pixels_flat)
-                train_set_size += 1
-
+                image_out_dir_annotated = image_out_dir + '-to_annotate'
 
             # Set file paths and save.
             if split_peaks:
@@ -213,48 +325,115 @@ def main(dicom_in_dir, patient_data_path, split_path, image_out_dir, file_list_o
             out_path = os.path.join(image_out_dir, out_name)
             os.makedirs(image_out_dir, exist_ok=True)
             im.save(out_path)
+            df.loc[subject_new, 'FilePath'] = os.path.abspath(out_path)
+
+            if read_annotations:                
+                # Save the modal velocity NumPy array
+                peak_array_out_name = out_name.replace('.png', '.npy')
+                peak_array_out_dir = image_out_dir+'-peak_arrays'
+                peak_array_out_path = os.path.join(peak_array_out_dir, peak_array_out_name)
+                os.makedirs(peak_array_out_dir, exist_ok=True)
+                annotation = annotation.astype(np.float32)
+                np.save(peak_array_out_path, annotation)
+                df.loc[subject_new, 'peak_array_path'] = os.path.abspath(peak_array_out_path)
+
+                # Save a copy of the image with the extracted modal velocity curve overlaid, for sanity checking.
+                image_annotated_out_name = out_name
+                image_annotated_out_dir = image_out_dir+'-extracted_annotations'
+                image_annotated_out_path = os.path.join(image_annotated_out_dir, image_annotated_out_name)
+                os.makedirs(image_annotated_out_dir, exist_ok=True)
+                
+                pixel_data = np.array(im)
+                plt.figure()
+                plt.axis('off')
+                plt.imshow(pixel_data, cmap='gray')
+                plt.plot(annotation, color='red', linewidth=1)
+                plt.savefig(image_annotated_out_path, bbox_inches='tight', pad_inches=0)
+                plt.close()
+            
             if save_copy_for_annotation:
                 out_path_annotated = os.path.join(image_out_dir_annotated, out_name)
                 os.makedirs(image_out_dir_annotated, exist_ok=True)
                 im_annotated.save(out_path_annotated)
-
-            # Save processed image path to dataframe.
-            df.loc[subject_new, 'FilePath'] = os.path.abspath(out_path)
-            if save_copy_for_annotation:
                 df.loc[subject_new, 'FilePath_annotated'] = os.path.abspath(out_path_annotated)
-                
-            ## Get the final scaling factor for each row.
+            
+            ## Get the final scaling factor for each row (could be different for each peak image if splitting peaks.
             # True VTI (cm) = (# processed pixels) * rescale_x * rescale_y * PhysicalDeltaX * PhysicalDeltaY
             #               = (# processed pixels) * pixel_scale_factor
-            df.loc[subject_new, 'pixel_scale_factor'] = rescale_x * rescale_y * base_df.loc[subject, 'PhysicalDeltaX'] * base_df.loc[subject,'PhysicalDeltaY']
-        print(f'Finished {in_path}')
-        print('-'*200)
-
+            pixel_scale_factor = rescale_x * rescale_y * base_df.loc[subject, 'PhysicalDeltaX'] * base_df.loc[subject, 'PhysicalDeltaY']
+            df.loc[subject_new, 'pixel_scale_factor'] = pixel_scale_factor
             
-    ## Drop rows lacking a split value or pixel_scale_factor
-    df.drop(df[df['split_all_random'].isna()].index, inplace=True)
-    df.drop(df[df['pixel_scale_factor'].isna()].index, inplace=True)
+            if split_peaks and read_annotations:
+                # Calculate VTI from tracing.
+                vti_px_annotation = annotation.sum()
+                df.loc[subject_new, 'AOVTI_px_annotation_extracted_peaks'] = vti_px_annotation # the number of pixels
+                df.loc[subject_new, 'AOVTI_annotation_extracted_peaks'] = vti_px_annotation*pixel_scale_factor
+                if vti_px_annotation > 0:
+                    num_peaks_annotated += 1
+            
+            # Record pixels in the training set in order to obtain the mean and standard deviation. Should be done differently if using multiple color channels
+            if (base_df.loc[subject, 'split_all_random'] == 'train'):
+                if (not read_annotations) or (vti_px_annotation > 0):
+                    pixels_flat = np.array(im).flatten()
+                    train_pixels_all.extend(pixels_flat)
+                    train_set_size += 1
+            
+        # Keep track of the number of peaks which were annotated by Cameron.
+        if read_annotations and split_peaks:
+            df.loc[df['Subject_base'] == subject, 'num_peaks_extracted'] = len(annotation_list)
+            df.loc[df['Subject_base'] == subject, 'num_peaks_annotated_found'] = num_peaks_annotated
+            df.loc[df['Subject_base'] == subject, 'num_peaks_annotated_missed'] = df.loc[subject_new, 'num_peaks_annotated_actual'] - num_peaks_annotated 
+
+            total_peaks_extracted += len(annotation_list)
+            total_peaks_annotated += num_peaks_annotated
 
     ## Calculate the VTI values in terms of number of pixels in the processed image.
-    df['AOVTI_px'] = [vti/r for vti, r in zip(df['AOVTI'], df['pixel_scale_factor'])]
+    df['AOVTI_px'] = [vti/r for vti, r in zip(df['AOVTI'], df['pixel_scale_factor'])]# VTI in units of pixels, as measured by Mael.
 
     ## Sort the rows based on subject name
     df.sort_values('Subject', axis=0, key=sort_id_key_vectorized, inplace=True)
 
+    ## Sort columns.
+    columns_start = ['Subject_base']
+    columns_end = ['num_peaks_annotated_found', 'num_peaks_annotated_actual', 'num_peaks_annotated_missed', 'num_peaks_extracted']
+    columns_sorted = columns_start + [c for c in df.columns if (not c in columns_start) and (not c in columns_end)] + columns_end
+    df = df[columns_sorted]
+
     ## Calculate the mean and standard deviation of the training set pixels.
     train_mean = np.array(train_pixels_all).mean()
     train_std = np.array(train_pixels_all).std()
-    print('Training set mean:', train_mean)
-    print('Training set std :', train_std)
-    print('Training set size :', train_set_size)
+    #print('Training set mean:', train_mean)
+    #print('Training set std :', train_std)
+    #print('Training set size :', train_set_size)
     df.loc[:, 'train_mean'] = train_mean
     df.loc[:, 'train_std'] = train_std
     
+    ## Drop rows lacking a split value or pixel_scale_factor
+    #df.drop(df[df['split_all_random'].isna()].index, inplace=True)
+    df.drop(df[df['pixel_scale_factor'].isna()].index, inplace=True)
+    if split_peaks and read_annotations:
+        df_all_peaks = df.copy()
+        df.drop(df[df['AOVTI_px_annotation_extracted_peaks'] == 0].index, inplace=True)
+    
+    ## Calculate VTI as the mean across the peaks labelled by Cameron (including only those which are extracted by this script). # Not really useful; we want to also include the annotated peaks not extracted by the script, which is done earlier in the script.
+#    subject_means = df.groupby('Subject_base')[['AOVTI_px_annotation_extracted_peaks', 'AOVTI_annotation_extracted_peaks']].mean()
+#    for subject_base in df['Subject_base'].unique().tolist():
+#        df.loc[df['Subject_base']==subject_base, 'AOVTI_px_annotation_extracted_peaks_mean'] = subject_means.loc[subject_base, 'AOVTI_px_annotation_extracted_peaks']
+#        df.loc[df['Subject_base']==subject_base, 'AOVTI_annotation_extracted_peaks_mean'] = subject_means.loc[subject_base, 'AOVTI_annotation_extracted_peaks']
+
+    ## Print number of peaks annotated.
+    if split_peaks and read_annotations:
+        print('Number of peaks extracted:', total_peaks_extracted)
+        print('Number of peaks annotated:', total_peaks_annotated)
+    
     ## Save the dataframe.
     df.to_csv(file_list_out_path, index=True)
+    if split_peaks and read_annotations:
+        df_all_out_path = file_list_out_path.replace('.csv', '-all_peaks.csv')
+        df_all_peaks.to_csv(df_all_out_path, index=True)
     return
 
-def getPeaks(pixel_data_ycbcr, pad, rescale, new_height, new_width):
+def getPeaks(pixel_data_ycbcr, annotation):
     """Create separate images for each main peak in the VT spectrum
 Parameters:
     pixel_data_ycbcr: array of shape HxWxC with raw pixel data from DICOM file in YCbCr format
@@ -266,16 +445,23 @@ Returns:
 
     ## Generate a list of peak images.
     peak_list_ycbcr = []
+    annotation_list = [] # 1D arrays of modal velocity values
     
     for label in range(1, bands.max()+1):
         if not label in bands:
             continue # skip if this peak was deleted
 
-        peak_image = pixel_data_ycbcr[:, bands==label] # 
-
+        indices = (bands==label)
+        peak_image = pixel_data_ycbcr[:, indices]
+        if not annotation is None:
+            annotation_segment = annotation[indices]
+        else:
+            annotation_segment = None
+            
         peak_list_ycbcr.append(peak_image)
+        annotation_list.append(annotation_segment)
 
-    return peak_list_ycbcr
+    return peak_list_ycbcr, annotation_list
     
 
 def getPeakBands(pixel_data_ycbcr):
@@ -413,7 +599,7 @@ Returns:
         for label in bad_labels:
             bands[bands==label] = 0
     else:
-        print(f'Warning: All peaks identified as bad. Keeping all peaks.')
+        print(f'Warning: All peaks identified as bad. Keeping all peaks. File: {in_path}')
     return bands
 
 if __name__ == '__main__':
@@ -422,7 +608,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=description, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     
     ## Define positional arguments.
-    #parser.add_argument("png_data_path", help="Path to the spreadsheet containing information from the DICOM headers and DICOM filepaths.") # NEW: THIS DATAFRAME WILL BE GENERATED IN THIS SCRIPT
     
     ## Define optional arguments.
     # input/output paths
@@ -434,16 +619,17 @@ if __name__ == '__main__':
                         help='path to the spreadsheet containing VTI and other information for each patient, taken from COspreadsheet.',
                         default='/hpf/largeprojects/ccmbio/sufkes/echonet_pediatric/data/data_from_sickkids/processed/clinical_data/vti/vti_master_raw_data_sheet_2021-04-21.csv')
     parser.add_argument('--split_path',
-                        help='Path to split file containing a column "split_VTI"',
+                        type=str,
+                        help='path to split file containing a column "split_VTI"',
                         default='/hpf/largeprojects/ccmbio/sufkes/echonet_pediatric/data/data_from_sickkids/processed/clinical_data/split.csv')
     parser.add_argument('--image_out_dir',
                         type=str,
                         help='directory to save processed images to',
-                        default='/hpf/largeprojects/ccmbio/sufkes/echonet_pediatric/data/data_from_sickkids/processed/echo_data/vti_n225')
+                        default='/hpf/largeprojects/ccmbio/sufkes/echonet_pediatric/data/data_from_sickkids/processed/echo_data/vti_camerons_annotations-split_peaks-417x286-rescale')
     parser.add_argument('--file_list_out_path',
                         type=str,
                         help='path to save final processed file list to',
-                        default='/hpf/largeprojects/ccmbio/sufkes/echonet_pediatric/data/data_from_sickkids/processed/clinical_data/vti/FileList_vti.csv')
+                        default='/hpf/largeprojects/ccmbio/sufkes/echonet_pediatric/data/data_from_sickkids/processed/clinical_data/vti/FileList-vti_camerons_annotations-split_peaks-417x286-rescale.csv')
     
     # image processing options
     parser.add_argument('-m', '--out_color_mode',
@@ -474,11 +660,24 @@ if __name__ == '__main__':
                         help='remove solid green-blue line at bottom of V-T plot')
     parser.add_argument('-s', '--split_peaks',
                         action='store_true',
-                        help='')
-    parser.add_argument('-a', '--save_copy_for_annotation',
-                        help='save a second copy of the processed image to be annotated; add column in the file list to record the path of the annotation copy',
-                        action='store_true')
+                        help='remove solid green-blue line at bottom of V-T plot')
 
+    # Annotation settings
+    parser.add_argument('--save_copy_for_annotation',
+                        help='save a second copy of the processed image to be annotated; add column in the file list to record the path of copy of the image to be annotated',
+                        action='store_true')
+    parser.add_argument('--read_annotations',
+                        action='store_true',
+                        help='read modal velocity annotations from images; annotated images must be in their original resolution, and contain only the VTI plot portion of the Doppler image as would be extracted by this script; annotations must be in red; images must be PNG; tracings are read from the bottom-most red pixel in a column of the image')
+    parser.add_argument('--annotations_in_dir',
+                        type=str,
+                        help='directory containing VTI plots with modal velocity annotations',
+                        default='/hpf/largeprojects/ccmbio/sufkes/echonet_pediatric/data/data_from_sickkids/processed/echo_data/vti_camerons_annotations/annotated')
+    parser.add_argument('--num_annotated_peaks_path',
+                        type=str,
+                        help='path to CSV file containing the number of peaks annotated by Cameron in each VTI image',
+                        default='/hpf/largeprojects/ccmbio/sufkes/echonet_pediatric/data/data_from_sickkids/processed/clinical_data/vti/num_peaks_annotated_by_cameron.csv')
+                        
     # Parse arguments.
     args = parser.parse_args()
 

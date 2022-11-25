@@ -126,6 +126,7 @@ def makeVideo(fileToProcess, destinationFolder):
 
             if i == 0:
                 print('Dimensions (after trimming 10% of each side):', smallOutput.shape)
+                print(f'Dimensions (after rescaling):  {cropSize}')
                 print('Pixel size (x) scaled up by a factor of:', smallOutput.shape[0]/cropSize[0])
                 print('Pixel size (y) scaled up by a factor of:', smallOutput.shape[1]/cropSize[1])
                 print('')
@@ -135,8 +136,10 @@ def makeVideo(fileToProcess, destinationFolder):
             # Resize image
             output = cv2.resize(smallOutput, cropSize, interpolation = cv2.INTER_CUBIC)
 
-            finaloutput = mask(output)
-
+            #print('Warning: Skipping mask() call for the first time (2022-03-29). I have always done this step in previous conversions.')
+            finaloutput = mask(output) # orginal line
+            #finaloutput = output # new line
+            
             finaloutput = cv2.merge([finaloutput,finaloutput,finaloutput])
             out.write(finaloutput)
 
@@ -152,10 +155,10 @@ def makeVideo(fileToProcess, destinationFolder):
 # In[ ]:
 
 
-AllA4cNames = '/hpf/largeprojects/ccmbio/sufkes/echonet/data/4c_files_only'
+#AllA4cNames = '/hpf/largeprojects/ccmbio/sufkes/echonet/data/4c_files_only'
 #AllA4cNames = '/hpf/largeprojects/ccmbio/sufkes/echonet_pediatric/data/data_from_sickkids/raw/data_from_onedrive-20210118_lvot_files_only'
 
-count = 0
+#count = 0
     
 cropSize = (112,112)
 #subfolders = os.listdir(AllA4cNames) # Steve: commented out to avoid error if AllA4cNames directory doesn't exist.

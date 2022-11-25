@@ -1,5 +1,6 @@
-"""Functions for training and running EF prediction."""
+#!/usr/bin/env python3
 
+"""Functions for training and running EF prediction."""
 import math
 import os
 import time
@@ -41,6 +42,13 @@ def run(num_epochs=45,
 
         #### Added by Steven Ufkes:
         # Needed within video.py
+        optimizer_name="SGD",
+        lr=1e-4,
+        momentum=0.9,
+        weight_decay=1e-4,
+        return_value=None, # value returned from this function. If 'trained_model_val_loss', return the loss of the trained model in the validation set without test-time augmentation. If 'trained_model_val_loss_test_time_augmented', return the loss of the trained model in the validation set with test-time augmentation
+        note='',
+        
         start_checkpoint_path=None, # Path to checkpoint file to resume from. Will not be overwritten unless it is in the default save location for the run.
         load_model_weights_only=False, # Resume from checkpoint, but only take the model weights etc. store in checkpoint['state_dict']. Do not get the epoch number etc. Use if you want to retrain starting from the weights trained on the EchoNet dataset.
         run_train=True, # Whether or not to train the model.
@@ -184,12 +192,15 @@ def run(num_epochs=45,
     model.to(device)
 
     # Set up optimizer
-    print('Warning: Using hard-coded alternate learning rate for one-time test.')
-    #lr=1e-4 # original
-    lr = 1e-5
-    optim = torch.optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=1e-4)
+    optimizers = {
+        'SGD':torch.optim.SGD(model.parameters(), lr=lr, momentum=momentum, weight_decay=weight_decay),
+        'Adam':torch.optim.Adam(model.parameters(), lr=lr, betas=(0.9, 0.999), eps=1e-08, weight_decay=weight_decay, amsgrad=False),
+        'AdamW':torch.optim.AdamW(model.parameters(), lr=lr, betas=(0.9, 0.999), eps=1e-08, weight_decay=weight_decay, amsgrad=False)
+    }
+    optim = optimizers[optimizer_name]
+    
     if lr_step_period is None:
-        lr_step_period = math.inf
+        lr_step_period = math.inf # Steven Ufkes: I assume infinite period prevents StepLR() from decaying the learning rate.
     scheduler = torch.optim.lr_scheduler.StepLR(optim, lr_step_period)
 
     # Steven Ufkes: Need to pass new kwargs into mean, std calculation.
@@ -246,6 +257,7 @@ def run(num_epochs=45,
         with open(os.path.join(output, "log.csv"), "a") as f:
             epoch_resume = 0
             bestLoss = float("inf")
+            current_epoch_is_best = False
             try:
                 # Attempt to load checkpoint
 
@@ -286,7 +298,7 @@ def run(num_epochs=45,
 
                 f.write("Resuming from epoch {}\n".format(epoch_resume))
             except FileNotFoundError:
-                f.write("Starting run from scratch\n")
+                f.write("Starting training from scratch\n")
 
             for epoch in range(epoch_resume, num_epochs):
                 print("Epoch #{}".format(epoch), flush=True)
@@ -296,6 +308,7 @@ def run(num_epochs=45,
                         torch.cuda.reset_max_memory_allocated(i)
                         torch.cuda.reset_max_memory_cached(i)
                     #loss, yhat, y = echonet.utils.video.run_epoch(model, dataloaders[phase], phase == "train", optim, device)
+                    ## NB: In the next line, run_epoch() will update the model only if phase=='train'.
                     loss, yhat, y = echonet.utils.video.run_epoch(model, dataloaders[phase], phase=="train", optim, device, block_size=training_block_size)
                     f.write("{},{},{},{},{},{},{},{},{}\n".format(epoch,
                                                                   phase,
@@ -306,6 +319,11 @@ def run(num_epochs=45,
                                                                   sum(torch.cuda.max_memory_allocated() for i in range(torch.cuda.device_count())),
                                                                   sum(torch.cuda.max_memory_cached() for i in range(torch.cuda.device_count())),
                                                                   batch_size))
+                    if phase == 'val':
+                        val_loss = loss
+                        if val_loss < bestLoss:
+                            bestLoss = val_loss
+                            current_epoch_is_best = True
                     f.flush()
 
                 scheduler.step()
@@ -317,15 +335,15 @@ def run(num_epochs=45,
                     'period': period,
                     'frames': frames,
                     'best_loss': bestLoss,
-                    'loss': loss,
+                    'loss': val_loss,
                     'r2': sklearn.metrics.r2_score(yhat, y),
                     'opt_dict': optim.state_dict(),
                     'scheduler_dict': scheduler.state_dict(),
                 }
                 torch.save(save, os.path.join(output, "checkpoint.pt"))
-                if loss < bestLoss:
+                if current_epoch_is_best:
                     torch.save(save, os.path.join(output, "best.pt"))
-                    bestLoss = loss
+                    current_epoch_is_best = False
 
             # Load best weights
             checkpoint = torch.load(os.path.join(output, "best.pt"))
@@ -379,6 +397,9 @@ def run(num_epochs=45,
                 f.write("{} (all clips) RMSE: {:.2f} ({:.2f} - {:.2f})\n".format(split, *tuple(map(math.sqrt, echonet.utils.bootstrap(y, np.array(list(map(lambda x: x.mean(), yhat))), sklearn.metrics.mean_squared_error)))))
                 f.flush()
 
+                if split=='val':
+                    trained_model_val_loss_test_time_augmented = tuple(map(math.sqrt, echonet.utils.bootstrap(y, np.array(list(map(lambda x: x.mean(), yhat))), sklearn.metrics.mean_squared_error)))[0]
+
                 # Write full performance to file
                 with open(os.path.join(output, "{}_predictions.csv".format(split)), "w") as g:
                     for (filename, pred) in zip(ds.fnames, yhat):
@@ -419,6 +440,13 @@ def run(num_epochs=45,
 #                plt.savefig(os.path.join(output, "{}_roc.pdf".format(split)))
 #                plt.close(fig)
 
+    if return_value == 'trained_model_val_loss':
+        return bestLoss
+    elif return_value == 'trained_model_val_loss_test_time_augmented':
+        return trained_model_val_loss_test_time_augmented
+    elif return_value is None:
+        return
+
 def run_epoch(model, dataloader, train, optim, device, save_all=False, block_size=None):
     """Run one epoch of training/evaluation for segmentation.
 
@@ -448,7 +476,7 @@ def run_epoch(model, dataloader, train, optim, device, save_all=False, block_siz
     y = []
 
     with torch.set_grad_enabled(train):
-        with tqdm.tqdm(total=len(dataloader)) as pbar:
+        with tqdm.tqdm(total=len(dataloader), disable=True) as pbar:
             for (X, outcome) in dataloader:
 
                 y.append(outcome.numpy())
@@ -487,8 +515,9 @@ def run_epoch(model, dataloader, train, optim, device, save_all=False, block_siz
                 total += loss.item() * X.size(0)
                 n += X.size(0)
 
-                pbar.set_postfix_str("{:.2f} ({:.2f}) / {:.2f}".format(total / n, loss.item(), s2 / n - (s1 / n) ** 2))
-                pbar.update()
+                # Steven Ufkes: I don't want to see the progress bar. It conflicts with the one for hyperparameter optimization
+                #pbar.set_postfix_str("{:.2f} ({:.2f}) / {:.2f}".format(total / n, loss.item(), s2 / n - (s1 / n) ** 2))
+                #pbar.update()
 
     if not save_all:
         yhat = np.concatenate(yhat)
@@ -497,37 +526,33 @@ def run_epoch(model, dataloader, train, optim, device, save_all=False, block_siz
     return total / n, yhat, y
 
 ## Steven Ufkes: Add command line wrapper allowing the passing of a configuration file instead of arguments.
-def run_from_config():
-    # Create argument parser.
-    description = """Execute video.run with arguments specified in a JSON file."""
-    parser = argparse.ArgumentParser(description=description)
+def run_from_config(arg_dict=None):
+    # Usually a configuration JSON file is passed as an argument to run.py from the command line. Alternatively, call this function directly passing in a Python dictionary containing the run configuration (e.g. for automatic hyperparameter optimization).
+    if arg_dict is None: # If running from command line, argdict will be None.
+        # Create argument parser.
+        description = """Execute video.run with arguments specified in a JSON file."""
+        parser = argparse.ArgumentParser(description=description)
 
-    # Define positional arguments.
-    parser.add_argument("config_path", help="JSON configuration file containing arguments accepted by video.run().", type=str)
+        # Define positional arguments.
+        parser.add_argument("config_path", help="JSON configuration file containing arguments accepted by video.run().", type=str)
+        
+        # Parse arguments.
+        config_args = parser.parse_args()
 
-    # Define optional arguments.
-#    parser.add_argument("-v", "--verbose", help="print lots of stuff")
-
-    # Print help if no args input.
-    if (len(sys.argv) == 1):
-        parser.print_help()
-        sys.exit()
-
-    # Parse arguments.
-    config_args = parser.parse_args()
-
-    # Read arguments to dict.
-    with open(config_args.config_path, 'r') as f:
-        arg_dict = json.load(f)
+        # Read arguments to dict.
+        with open(config_args.config_path, 'r') as f:
+            arg_dict = json.load(f)
 
     # Copy config to output directory if specified.
     if 'output' in arg_dict:
         os.makedirs(arg_dict['output'], exist_ok=True)
-        with open(os.path.join(arg_dict['output'], 'run_config.json'), 'w') as f:
+        with open(os.path.join(arg_dict['output'], 'config.json'), 'w') as f:
             json.dump(arg_dict, f, indent=4)
+            print("Starting run with configuration:")
+            print(json.dumps(arg_dict,  indent=4))
 
     # Run main function.
-    run(**arg_dict)
+    return run(**arg_dict)
 
 if __name__ == '__main__':
     run_from_config()

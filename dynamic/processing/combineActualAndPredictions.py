@@ -47,7 +47,7 @@ def main(config_path=None, actual_path=None, prediction_paths=None, out_dir=None
         df_all['Subject'] = df_prediction['Subject'].unique()
 
         df_all[actual_col] = [df_actual.loc[(df_actual['Subject']==subject), tasks].values[0] for subject in df_all['Subject']]
-        df_all[prediction_col] = [df_prediction.loc[df_prediction['Subject']==subject, tasks].mean() for subject in df_all['Subject']]
+        df_all[prediction_col] = [df_prediction.loc[df_prediction['Subject']==subject, tasks].mean() for subject in df_all['Subject']] # take the mean of the subclip predictions output from the test-time augmentation method.
 
         ## For LVOT, convert the actual and predicted values back to mm using the resolution for each subject.
         if 'LVOT' in tasks:

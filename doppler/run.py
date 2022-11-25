@@ -2,6 +2,11 @@
 
 import os
 import sys
+import argparse
+import json
+import datetime
+import warnings
+
 import numpy as np
 import pandas as pd
 import torch
@@ -10,12 +15,11 @@ import torch.nn as nn
 
 import net
 from dataset import DopplerDataset
+
 import matplotlib
 matplotlib.use('Agg')
 from matplotlib import pyplot as plt
-
 from PIL import Image
-
 import statsmodels.api as sm # only used for generateMetrics(), which should be moved out of this file.
 
 def train_loop(dataloader, model, loss_fn, optimizer, device, verbose=False, train_noise=0.0):
@@ -26,7 +30,8 @@ def train_loop(dataloader, model, loss_fn, optimizer, device, verbose=False, tra
     for batch, (X, y) in enumerate(dataloader):
         X = X.to(device)
         if train_noise > 0:
-            y += np.random.normal(loc=0.0, scale=train_noise)
+            noise = torch.from_numpy(np.random.normal(loc=0.0, scale=train_noise, size=y.shape))
+            y += noise
         y = y.to(device) # shape = (batch_size, out_features) if out_features > 1, else (batchsize, ) ?
         current_batch_size = y.shape[0]
 
@@ -83,7 +88,7 @@ def val_loop(dataloader, model, loss_fn, device, verbose=False):
 
     return mean_loss
 
-## Try a custom replacement of the standard validation loop above.
+## Try a custom replacement of the standard validation loop above. This method calculates MSE loss in VTI in units of cm rather than pixels. I did not end up using this for model selection.
 def val_loop_custom(dataloader, model, loss_fn, device, verbose=False):
     size = len(dataloader.dataset)
     total_loss = 0
@@ -115,16 +120,16 @@ def val_loop_custom(dataloader, model, loss_fn, device, verbose=False):
 
     return mean_loss
 
-def calculateMetrics(df, split, run_name, metrics_out_path='../runs/doppler/metrics-doppler.csv'):
+def calculateMetrics(df, split, run_name, metrics_path, aggregation_type='None'):
     """df is a dataframe with columns for acutal and predicted values.
 
 Should be organized better (e.g. combined with the script for LVOT diameter and EF). Should be in a separate file etc.
 """
-    if os.path.exists(metrics_out_path):
-        metrics_df = pd.read_csv(metrics_out_path, index_col='run_name')
+    if os.path.exists(metrics_path):
+        metrics_df = pd.read_csv(metrics_path)#, index_col='run_name')
     else:
         metrics_df = pd.DataFrame(dtype=float)
-        metrics_df.index.name = 'run_name'
+        #metrics_df.index.name = 'run_name'
 
     actual_col = [col for col in df.columns if col.endswith('actual')][0]
     prediction_col = [col for col in df.columns if col.endswith('prediction')][0] # First column ending in 'prediction'
@@ -164,58 +169,80 @@ Should be organized better (e.g. combined with the script for LVOT diameter and 
     fit = model.fit()
     p = fit.pvalues[1]
 
-    metrics_df.loc[run_name, split+'-MSE'] = mse
-    metrics_df.loc[run_name, split+'-RMSE'] = rmse
-    metrics_df.loc[run_name, split+'-MAE'] = mae
-    metrics_df.loc[run_name, split+'-MAPE'] = mape
-    metrics_df.loc[run_name, split+'-R'] = r
-    metrics_df.loc[run_name, split+'-R2'] = r2
-    metrics_df.loc[run_name, split+'-p'] = p
+    # Find row to add metrics to.
+    try:
+        index = metrics_df.loc[(metrics_df['run_name']==run_name) & (metrics_df['aggregation_type']==aggregation_type)].index[0]
+    except IndexError: # if no matching row
+        metrics_df = metrics_df.append(pd.Series(dtype='object'), ignore_index=True) # add row
+        index = metrics_df.index[-1]
+    metrics_df.loc[index, 'run_name'] = run_name
+    metrics_df.loc[index, 'aggregation_type'] = aggregation_type
+    metrics_df.loc[index, split+'-MSE'] = mse
+    metrics_df.loc[index, split+'-RMSE'] = rmse
+    metrics_df.loc[index, split+'-MAE'] = mae
+    metrics_df.loc[index, split+'-MAPE'] = mape
+    metrics_df.loc[index, split+'-R'] = r
+    metrics_df.loc[index, split+'-R2'] = r2
+    metrics_df.loc[index, split+'-p'] = p
 
-    metrics_df.to_csv(metrics_out_path, index=True)
-    return
+    metrics_df.to_csv(metrics_path, index=False)
 
-def main(seed=489, out_dir='../runs/doppler'):
+    # If using a metric for optimization of hyperparameters, output it. 
+    output_value = mse
+    
+    return output_value
+
+def main(run_name = 'UNNAMED',
+         out_dir = None, # if None, automatically set to <time stamp>-<run_name>
+         note = '', # long text containing notes about the run. 
+
+         hyper_path = '/hpf/largeprojects/ccmbio/sufkes/echonet_pediatric/runs/doppler/hyperparameters.csv', # path to which to save hyperparameters and training loss values.
+         metrics_path = '/hpf/largeprojects/ccmbio/sufkes/echonet_pediatric/runs/doppler/metrics-vti_camerons_annotations.csv', # path to which to save test-time performance metrics.
+         
+         ## Model settings:
+         freeze_layers = 2, # For resnet18, let's try 0, 2, 5, 6, 7, 8 (want to freeze batch norm layers following each conv layer (I think)
+         dropout_rate = 0.0,
+         initial_parameters_path = None, # Set to None if starting from scratch.
+         seed=489,
+
+         ## Training loop settings:
+         optimizer_name = 'AdamW',
+         learning_rate = 3.0e-4, # 2.5e-4 paper
+         weight_decay = 0.008, # 0.008 paper
+         epochs = 500, # 50 paper
+         train_noise = 0.0, # 0.03 paper (applied to direct VTI prediction from entire Doppler velocity-time plot).
+
+         ## Dataloader settings:
+         file_list_path = '/hpf/largeprojects/ccmbio/sufkes/echonet_pediatric/data/data_from_sickkids/processed/clinical_data/vti/FileList.csv',
+         # If predicting VTI from all extracted peaks, need separate datasets including all peaks, even those without tracings on which to train the CNN model. These are used for evalutation of the final VTI prediction only.
+         file_list_all_peaks_path = '/hpf/largeprojects/ccmbio/sufkes/echonet_pediatric/data/data_from_sickkids/processed/clinical_data/vti/FileList-all_peaks.csv',
+         batch_size = 48,
+         shuffle = True,
+         drop_last = False,
+         #normalize_mode = 'training_set',
+         normalize_mode = 'self',
+         target_type = 'peak_array',
+         #target_type = 'AOVTI_px',
+
+         ## Test settings     
+         train = True,
+         predict = True,
+         test_vti_from_all_tracings = True, # Test prediction of VTI from all extracted peaks, including those which were not annotated and, therefore, were not included in the VTI curve prediction training.
+         force_positive_velocity = False, # Predicted velocity curve values may be negative. If this is set True, these negative values will be converted to zero at test time. They will be unchanged during training.
+         plot_tracing = True,
+         include_test_set = False, # Whether to include the hold-out test set (not the validation set), reserved for final evaluation of model.
+):
+    
     ## Set seeds for determinism.
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)  # if you are using multi-GPU.
-    np.random.seed(seed)  # Numpy module.
-    #random.seed(seed)  # Python random module.
+    torch.cuda.manual_seed_all(seed) # if you are using multi-GPU.
+    np.random.seed(seed) # Numpy module.
+    #random.seed(seed) # Python random module.
     torch.manual_seed(seed)
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
     
-    #### Set hyperparameters
-    ## Model settings:
-    freeze_layers = 2 # For resnet18, let's try 0, 2, 5, 6, 7, 8 (want to freeze batch norm layers following each conv layer (I think)
-    dropout_rate = 0.0
-
-    ## Training loop settings:
-    optimizer_name = 'AdamW'
-    learning_rate = 3.0e-4 # 2.5e-4 paper
-    weight_decay = 0.008 # 0.008 paper
-    epochs = 5 # 50 paper
-    train_noise = 0.0 # 0.03 paper
-
-    ## Dataloader settings:
-    file_list_path = '/hpf/largeprojects/ccmbio/sufkes/echonet_pediatric/data/data_from_sickkids/processed/clinical_data/vti/FileList_vti-split_peaks-417x286-rescale-with_peak_arrays.csv'
-    #file_list_path = '/hpf/largeprojects/ccmbio/sufkes/echonet_pediatric/data/data_from_sickkids/processed/clinical_data/vti/FileList_vti-split_peaks-417x286-pad-with_peak_arrays.csv'
-    #file_list_path = '/hpf/largeprojects/ccmbio/sufkes/echonet_pediatric/data/data_from_sickkids/processed/clinical_data/vti/FileList_vti-good.csv' # doesn't have train_mean or train_std
-    batch_size = 48
-    shuffle = True
-    drop_last = False
-    #normalize_mode = 'training_set'
-    normalize_mode = 'self'
-    target_type = 'peak_array'
-    #target_type = 'AOVTI_px'
-    
-    ## Other
-    note = 'weights from 400-epoch peak array prediction on rescaled images; first test of peak-mean VTI predictions'
-    
-    train = False
-    predict = True
-
     #### Select device.
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     #print('Using device:', device)
@@ -225,6 +252,11 @@ def main(seed=489, out_dir='../runs/doppler'):
     val_dataset = DopplerDataset(split='val', target_type=target_type, file_list_path=file_list_path, normalize_mode=normalize_mode)
     test_dataset = DopplerDataset(split='test', target_type=target_type, file_list_path=file_list_path, normalize_mode=normalize_mode)
 
+    if test_vti_from_all_tracings:
+        train_all_peaks_dataset = DopplerDataset(split='train', target_type=target_type, file_list_path=file_list_all_peaks_path, normalize_mode=normalize_mode)
+        val_all_peaks_dataset = DopplerDataset(split='val', target_type=target_type, file_list_path=file_list_all_peaks_path, normalize_mode=normalize_mode)
+        test_all_peaks_dataset = DopplerDataset(split='test', target_type=target_type, file_list_path=file_list_all_peaks_path, normalize_mode=normalize_mode)
+    
     ## Record the image dimensions.
     dim_x = train_dataset[0][0].shape[1]
     dim_y = train_dataset[0][0].shape[2]
@@ -256,8 +288,15 @@ def main(seed=489, out_dir='../runs/doppler'):
     model = net.myResNet18(freeze_layers=freeze_layers, dropout_rate=dropout_rate, out_features=out_features)
     model.to(device)
 
-
     if train:
+        ## Load pretrained model parameters if specified.
+        if not initial_parameters_path is None:
+            initial_state_dict = torch.load(initial_parameters_path)
+            model.load_state_dict(initial_state_dict)
+            print(f'Starting training with initial parameters: {initial_parameters_path}')
+        else:
+            print('Starting training with random initial parameters.')
+        
         ## Set loss function.
         loss_fn = nn.MSELoss()
 
@@ -310,8 +349,6 @@ def main(seed=489, out_dir='../runs/doppler'):
         loss_df.to_csv(loss_path, index=True)
     
         ## Save hyperparameters and losses to a spreadsheet.
-        hyper_name = 'hyperparameters.csv'
-        hyper_path = os.path.join(out_dir, hyper_name)
         if os.path.exists(hyper_path):
             hyper_df = pd.read_csv(hyper_path)
         else:
@@ -319,6 +356,7 @@ def main(seed=489, out_dir='../runs/doppler'):
         hyper_df = hyper_df.append(pd.Series(dtype='object'), ignore_index=True)
         hyper_df.loc[hyper_df.index[-1], 'dim_x'] = dim_x
         hyper_df.loc[hyper_df.index[-1], 'dim_y'] = dim_y
+        hyper_df.loc[hyper_df.index[-1], 'run_name'] = run_name
         hyper_df.loc[hyper_df.index[-1], 'note'] = note
         hyper_df.loc[hyper_df.index[-1], 'epochs'] = epochs
         hyper_df.loc[hyper_df.index[-1], 'train_noise'] = train_noise
@@ -332,6 +370,7 @@ def main(seed=489, out_dir='../runs/doppler'):
         hyper_df.loc[hyper_df.index[-1], 'optimizer'] = optimizer_name
         hyper_df.loc[hyper_df.index[-1], 'freeze_layers'] = freeze_layers
         hyper_df.loc[hyper_df.index[-1], 'dropout_rate'] = dropout_rate
+        hyper_df.loc[hyper_df.index[-1], 'initial_parameters_path'] = initial_parameters_path
         hyper_df.loc[hyper_df.index[-1], 'best_epoch'] = best_epoch
         hyper_df.loc[hyper_df.index[-1], 'mse_mean_val'] = val_mean_loss_min
         if target_type == 'AOVTI_px':
@@ -347,24 +386,33 @@ def main(seed=489, out_dir='../runs/doppler'):
 
     if predict:
         ## Generate tables of actual and predicted values.
+        ## Load trained model weights.
         best_state_dict = torch.load(os.path.join(out_dir, 'best.pt'))
         model.load_state_dict(best_state_dict)
         # Be sure to call model.eval() method before inferencing to set the dropout and batch normalization layers to evaluation mode. Failing to do this will yield inconsistent inference results (https://pytorch.org/tutorials/beginner/basics/saveloadrun_tutorial.html).
 
         dataset_dict = {}
-        dataset_dict['train'] = train_dataset
-        dataset_dict['val'] = val_dataset
-        #dataset_dict['test'] = test_dataset
+        if test_vti_from_all_tracings:
+            dataset_dict['train'] = train_all_peaks_dataset
+            dataset_dict['val'] = val_all_peaks_dataset
+            dataset_dict['test'] = test_all_peaks_dataset
+        else:
+            dataset_dict['train'] = train_dataset
+            dataset_dict['val'] = val_dataset
+            dataset_dict['test'] = test_dataset
+        
 
         model.eval()
         with torch.no_grad():
             for split, dataset in dataset_dict.items():
+                if (split == 'test') and (not include_test_set):
+                    continue
                 dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
-
+                
                 df = pd.DataFrame(columns=[target_type+'_actual', target_type+'_prediction'], dtype=float)
                 df.index.name = 'Subject'
                 
-                if target_type == 'peak_array':
+                if (target_type == 'peak_array') and plot_tracing:
                     ## Make directory to store predicted peak curves.
                     plot_out_dir = os.path.join(out_dir, 'peak_curves')
                     os.makedirs(plot_out_dir, exist_ok=True)
@@ -378,36 +426,49 @@ def main(seed=489, out_dir='../runs/doppler'):
                     # Load actual and predicted values. This will be a single number if target_type == 'AOVTI', and a vector if target_type == 'peak_array'
                     y = y[0].cpu().numpy()
                     yhat = yhat[0].cpu().numpy()
+                    # If predicting peak_array, convert negative velocities to zero if specified.
+                    if (target_type == 'peak_array') and force_positive_velocity:
+                        warnings.warn('Changing negative velocity values to zero at test-time.')
+                        yhat[yhat<0] = 0
 
                     if target_type == 'peak_array':
                         ## Generate Doppler image with peak curves overlaid.
-                        original_image_path = dataset.data_df.loc[index, 'FilePath']
+                        if plot_tracing:
+                            original_image_path = dataset.data_df.loc[index, 'FilePath']
                         
-                        original_image = Image.open(original_image_path)
-                        pixel_data = np.array(original_image)
-                        if len(pixel_data.shape) == 2: # if in greyscale, convert to RGB.
-                            pixel_data = np.stack([pixel_data]*3, axis=2) # shape [H, W, C=3]
-                        for x, (y_val, yhat_val) in enumerate(zip(y.astype(int), yhat.astype(int))):
-                            pixel_data[yhat_val:min(pixel_data.shape[0], yhat_val+2), x, 0] = 255 # mark the predicted peak in red
-                            pixel_data[y_val:min(pixel_data.shape[0], y_val+2), x, 1] = 255 # mark the ground truth peak in green
-                        image_with_peaks = Image.fromarray(pixel_data, mode='RGB')
-                        image_out_dir = os.path.join(plot_out_dir, split)
-                        os.makedirs(image_out_dir, exist_ok=True)
-                        out_path = os.path.join(image_out_dir, subject+'.png')
-                        image_with_peaks.save(out_path)
+                            original_image = Image.open(original_image_path)
+                            pixel_data = np.array(original_image)
+
+                            image_out_dir = os.path.join(plot_out_dir, split)
+                            os.makedirs(image_out_dir, exist_ok=True)
+                            out_path = os.path.join(image_out_dir, subject+'.png')
+                            
+                            plt.figure()
+                            plt.axis('off')
+                            plt.imshow(pixel_data, cmap='gray')
+                            plt.plot(y, color='red', linewidth=1)
+                            plt.plot(yhat, color='blue', linewidth=1)
+                            plt.savefig(out_path, bbox_inches='tight', pad_inches=0)
+                            plt.close()
+                        
+                        #image_with_peaks.save(out_path)
 
                         ## Store the VTI prediction for the curve; will later be combined with predictions for other peaks to compute subject VTI.
                         subject_base = dataset.data_df.loc[index, 'Subject_base']
                         df.loc[subject, 'Subject_base'] = subject_base # for peak images, subject will have a name like VTI123_5, and subject_base will be the orignal subject name, e.g. VTI123
 
-                        vti = y.sum()
+                        if test_vti_from_all_tracings:
+                            vti_cm = dataset.data_df.loc[index, 'AOVTI_annotation']
+                        else:
+                            vti = y.sum() # old way, where I calculated VTI from my tracings of every extracted peak.
                         vti_hat = yhat.sum()
 
                         ## Convert from units of pixels back to cm.
                         # Prediction is for a number of pixels in the image. 
                         # Each pixel represents a certain number of centimeters, different for each subject.
                         scale_factor = dataset.data_df.loc[index, 'pixel_scale_factor'] # do not use downscale_y for the target_type == 'peak_array'
-                        vti_cm = vti * scale_factor
+                        if not test_vti_from_all_tracings:
+                            vti_cm = vti * scale_factor
                         vti_hat_cm = vti_hat * scale_factor
                         
                         df.loc[subject, target_type+'_actual'] = vti_cm
@@ -441,25 +502,42 @@ def main(seed=489, out_dir='../runs/doppler'):
                     out_path = os.path.join(out_dir, out_name)
                     df.to_csv(out_path, index=True)
 
-                    ## Sketchy metrics calculation. Should be reorganized and probably combined wiit metric calculation for EF and LVOT diameter.
+                    ## Sketchy metrics calculation. Should be reorganized and probably combined with metric calculation for EF and LVOT diameter.
                     ## Combine predictions across peaks in different ways, calculating performance metrics for each method separately.
                     # mean
                     aggregation_type = 'mean'
-                    run_name = f'target_type: {target_type}; aggregation_type: {aggregation_type} - {note}'
-                    calculateMetrics(mean_df, split, run_name=run_name)
+                    output_metric = calculateMetrics(mean_df, split, run_name, metrics_path, aggregation_type=aggregation_type)
+                    # Keep the MSE in the final VTI prediction to output from run() for hyperparameter optimization.
+                    if split == 'val':
+                        warnings.warn('Saving MSE for final predicted VTI, for hyperparameter optimization.')
+                        output_loss = output_metric
                     predictions_out_name = f'{split}-{target_type}-{aggregation_type}-pred_and_actual.csv'
                     predictions_out_path = os.path.join(out_dir, predictions_out_name)
                     mean_df.to_csv(predictions_out_path, index=True)
 
                     # median
                     aggregation_type = 'median'
-                    run_name = f'target_type: {target_type}; aggregation_type: {aggregation_type} - {note}'
-                    calculateMetrics(median_df, split, run_name=run_name)
+                    calculateMetrics(median_df, split, run_name, metrics_path, aggregation_type=aggregation_type)
                     predictions_out_name = f'{split}-{target_type}-{aggregation_type}-pred_and_actual.csv'
                     predictions_out_path = os.path.join(out_dir, predictions_out_name)
                     median_df.to_csv(predictions_out_path, index=True)
                     
-                    
+                    # mean after dropping "outliers" (values outside mean +- outlier_sigma*std)
+                    outlier_sigma = 1.5
+                    df_no_outliers = df.copy()
+                    for subject_base in df['Subject_base'].unique().tolist():
+                        lower = mean_df.loc[subject_base, target_type+'_prediction'] - outlier_sigma*std_df.loc[subject_base, target_type+'_prediction']
+                        upper = mean_df.loc[subject_base, target_type+'_prediction'] + outlier_sigma*std_df.loc[subject_base, target_type+'_prediction']
+                        for index in df.loc[df['Subject_base']==subject_base, :].index:
+                            val = df.loc[index, target_type+'_prediction']
+                            if (val < lower) or (val > upper):
+                                df_no_outliers.drop(index=index, inplace=True)
+                    mean_no_outliers_df = df_no_outliers.groupby('Subject_base').mean()                
+                    aggregation_type = 'mean_no_outliers'
+                    calculateMetrics(mean_no_outliers_df, split, run_name, metrics_path, aggregation_type=aggregation_type)
+                    predictions_out_name = f'{split}-{target_type}-{aggregation_type}-pred_and_actual.csv'
+                    predictions_out_path = os.path.join(out_dir, predictions_out_name)
+                    mean_no_outliers_df.to_csv(predictions_out_path, index=True)
                 else:
                     out_name = split + '-' + target_type + '-pred_and_actual.csv'
                     out_path = os.path.join(out_dir, out_name)
@@ -470,8 +548,46 @@ def main(seed=489, out_dir='../runs/doppler'):
                     #df_raw.to_csv(out_path, index=True)
 
                     # Calculate performance metrics.
-                    run_name = f'target_type: {target_type} - {note}'
-                    calculateMetrics(df, split, run_name=run_name)
+                    calculateMetrics(df, split, run_name, metrics_path)
 
+    # Need to return a value for optimization with hyperopt. Perhaps should use loss from the final predicted VTI, rather than the pixelwise MSE in the VTI tracings.
+    if predict and (target_type == 'peak_array'):
+        return output_loss
+    else:
+        return
+
+def run_from_config(arg_dict=None):
+    # Usually a configuration JSON file is passed as an argument to run.py from the command line. Alternatively, call this function directly passing in a Python dictionary containing the run configuration (e.g. for automatic hyperparameter optimization).
+    if arg_dict is None: # If running from command line, argdict will be None.
+        # Create argument parser.
+        description = """Run the VTI prediction model with arguments specified in a JSON file."""
+        parser = argparse.ArgumentParser(description=description, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+
+        # Define positional arguments.
+        parser.add_argument("config_path", help="JSON configuration file", type=str)
+
+        # Parse arguments.
+        config_args = parser.parse_args()
+
+        # Read arguments to dict.
+        with open(config_args.config_path, 'r') as f:
+            arg_dict = json.load(f)
+
+    # Copy configuration to output directory if specified.
+    if (not 'out_dir' in arg_dict) or (arg_dict['out_dir'] is None):
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_dir_name = timestamp + '-' + arg_dict['run_name']
+        out_dir_base = '/hpf/largeprojects/ccmbio/sufkes/echonet_pediatric/runs/doppler'
+        out_dir = os.path.join(out_dir_base, out_dir_name)
+        arg_dict['out_dir'] = out_dir
+    os.makedirs(arg_dict['out_dir'], exist_ok=True)
+    with open(os.path.join(arg_dict['out_dir'], 'config.json'), 'w') as f:
+        json.dump(arg_dict, f, indent=4)
+        print("Starting run with configuration:")
+        print(json.dumps(arg_dict,  indent=4))
+        
+    # Run main function. Returns a loss value
+    return main(**arg_dict)
+                    
 if __name__ == '__main__':
-    main()
+    run_from_config()

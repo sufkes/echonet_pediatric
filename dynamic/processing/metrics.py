@@ -21,9 +21,6 @@ def sortSplits(s):
 
 def main(**kwargs):
     out_path = kwargs['out_path']
-    if out_path is None:
-        #out_path = os.path.dirname(__file__)+'/../../runs/metrics.csv'
-        out_path = '/hpf/largeprojects/ccmbio/sufkes/echonet_pediatric/runs/metrics.csv'
     in_dirs = kwargs['in_dirs']
     if in_dirs is None:
         in_dirs = glob.glob(os.path.dirname(__file__)+'/../../runs/*')
@@ -63,13 +60,13 @@ def main(**kwargs):
             rmse = np.sqrt(mse)
 
             # rRMSE # maybe a bit goofy
-            rrmse = rmse/mean_actual
+            #rrmse = rmse/mean_actual
             
             # MAE
             mae = 1/n*(np.abs(actual-prediction)).sum()
 
             # rMAE # maybe a bit goofy
-            rmae = mae/mean_actual
+            #rmae = mae/mean_actual
 
             # MAPE
             mape = 100/n*np.abs((actual-prediction)/actual).sum()
@@ -103,8 +100,8 @@ def main(**kwargs):
             df.loc[run_name, split_prefix+'-RMSE'] = rmse
             df.loc[run_name, split_prefix+'-MAE'] = mae
             df.loc[run_name, split_prefix+'-MAPE'] = mape
-            df.loc[run_name, split_prefix+'-rRMSE'] = rrmse
-            df.loc[run_name, split_prefix+'-rMAE'] = rmae
+            #df.loc[run_name, split_prefix+'-rRMSE'] = rrmse
+            #df.loc[run_name, split_prefix+'-rMAE'] = rmae
             df.loc[run_name, split_prefix+'-R'] = r
             df.loc[run_name, split_prefix+'-R2'] = r2
             df.loc[run_name, split_prefix+'-p'] = p
@@ -116,14 +113,14 @@ def main(**kwargs):
 if (__name__ == '__main__'):
     # Create argument parser.
     description = """Generate CSV of regression metrics for runs."""
-    parser = argparse.ArgumentParser(description=description)
+    parser = argparse.ArgumentParser(description=description, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
     # Define positional arguments.
 
 
     # Define optional arguments.
     parser.add_argument('-i', '--in_dirs', help="paths to run directores contain files called 'train_predictions.csv' and 'val_predictions.csv'. Default: all directories in ../../runs", nargs='+')
-    parser.add_argument("-o", "--out_path", help="output path")
+    parser.add_argument("-o", "--out_path", help="output path", default='/hpf/largeprojects/ccmbio/sufkes/echonet_pediatric/runs/metrics.csv')
 
     # Parse arguments.
     args = parser.parse_args()
