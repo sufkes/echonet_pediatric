@@ -62,7 +62,7 @@ def mask(output):
 # In[3]:
 
 
-def makeVideo(fileToProcess, destinationFolder):
+def makeVideo(fileToProcess, destinationFolder, decrease_framerate_factor=1, max_frames=150):
     # SU: removed try-except block.
 #    try:
         #fileName = fileToProcess.split('\\')[-1] #\\ if windows, / if on mac or sherlock
@@ -121,7 +121,7 @@ def makeVideo(fileToProcess, destinationFolder):
         print("video_filename:", video_filename)
         out = cv2.VideoWriter(video_filename, fourcc, fps, cropSize)
 
-        for i in range(frames):
+        for i in range(0, min(max_frames,frames), decrease_framerate_factor):
             outputA = testarray[i,:,:,0]
             smallOutput = outputA[int(height/10):(height - int(height/10)), int(height/10):(height - int(height/10))]
 
@@ -131,7 +131,7 @@ def makeVideo(fileToProcess, destinationFolder):
                 print('Pixel size (x) scaled up by a factor of:', smallOutput.shape[0]/cropSize[0])
                 print('Pixel size (y) scaled up by a factor of:', smallOutput.shape[1]/cropSize[1])
                 print('')
-                print('These factors should be recorded for each image in the FileList.csv file for the LVOT (and 4C) data. Currently, I am not recording this, and the raw LVOT model technically predicts LVOT diameter in units of original image pixels (i.e. in units of the processed images multiplied by the factor just reported). , which is then converted to cm using the recorded DICOM tags PhysicalDeltaX and PhysicalDeltaY. This sacling factor has been the same value for all LVOT images (5.071428571428571), but should be recorded in case it ever changes, and the LVOT model should predict in units of pixels of the input image for the sake of clarity.')
+                print('These factors should be recorded for each image in the FileList.csv file for the LVOT (and 4C) data. Currently, I am not recording this, and the raw LVOT model technically predicts LVOT diameter in units of original image pixels (i.e. in units of the processed images multiplied by the factor just reported). , which is then converted to cm using the recorded DICOM tags PhysicalDeltaX and PhysicalDeltaY. This scaling factor has been the same value for all LVOT images (5.071428571428571), but should be recorded in case it ever changes, and the LVOT model should predict in units of pixels of the input image for the sake of clarity.')
                 print('')
                 
             # Resize image

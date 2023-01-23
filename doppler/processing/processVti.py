@@ -71,8 +71,18 @@ def main(dicom_in_dir, patient_data_path, split_path, image_out_dir, file_list_o
 
         # Load the image
         dicom = pydicom.dcmread(in_path)
-        print('Warning: 2022-04-01: Some image may have PhotometricInterpretation=RGB, rather than YCbCr. You should add a check and handle this case.')
-        pixel_data_ycbcr = dicom.pixel_array
+        photometric_interpretation = dicom[(0x0028,0x0004)].value
+        if photometric_interpretation == 'YBR_FULL_422':
+            pixel_data_ycbcr = dicom.pixel_array
+        elif photometric_interpretation == 'RGB':
+            pixel_data_rgb = dicom.pixel_array
+            im_rgb = Image.fromarray(pixel_data_rgb, mode='RGB')
+            im_ycbcr = im_rgb.convert('YCbCr')
+            pixel_data_ycbcr = np.array(im_ycbcr)
+        else:
+            print('Warning: Image has unhandled PhotometricInterpretation. Color conversion may be incorrect.')
+            pixel_data_ycbcr = dicom.pixel_array
+        
 
         # Get information from DICOM header.
         try:

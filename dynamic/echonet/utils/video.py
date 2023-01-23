@@ -62,7 +62,8 @@ def run(num_epochs=45,
         freeze_n_conv_layers=None, # int, how many of the (2+1D) conv layers to freeze, starting from the first layer and up to five (there are 5 (2+1D)conv layers
         set_fc_bias=True, # Original script does `model.fc.bias.data[0] = 55.6`; Let's try without doing that.
         clips=1, # Original script always uses clips=1 for training; not sure if the training loop will work with clips>1, but let us try.
-        training_block_size=None # Added this option for training when clips>1; Maximum number of augmentations to run on at the same time. Use to limit the amount of memory used. If None, always run on all augmentations simultaneously.
+        training_block_size=None, # Added this option for training when clips>1; Maximum number of augmentations to run on at the same time. Use to limit the amount of memory used. If None, always run on all augmentations simultaneously.
+        #test_time_augmentation=True # When using trained model for inference, whether to perform augmentation by using every possible subclip in the input video. This may cause memory errors when input videos have many frames. NOT IMPLEMENTED
         ):
     """Trains/tests EF prediction model.
 
@@ -391,7 +392,7 @@ def run(num_epochs=45,
                 ds = echonet.datasets.Echo(split=split, **kwargs, **run_config_kwargs, clips="all")
                 dataloader = torch.utils.data.DataLoader(
                     ds, batch_size=1, num_workers=num_workers, shuffle=False, pin_memory=(device.type == "cuda"))
-                loss, yhat, y = echonet.utils.video.run_epoch(model, dataloader, False, None, device, save_all=True, block_size=100)
+                loss, yhat, y = echonet.utils.video.run_epoch(model, dataloader, False, None, device, save_all=True, block_size=50)
                 f.write("{} (all clips) R2:   {:.3f} ({:.3f} - {:.3f})\n".format(split, *echonet.utils.bootstrap(y, np.array(list(map(lambda x: x.mean(), yhat))), sklearn.metrics.r2_score)))
                 f.write("{} (all clips) MAE:  {:.2f} ({:.2f} - {:.2f})\n".format(split, *echonet.utils.bootstrap(y, np.array(list(map(lambda x: x.mean(), yhat))), sklearn.metrics.mean_absolute_error)))
                 f.write("{} (all clips) RMSE: {:.2f} ({:.2f} - {:.2f})\n".format(split, *tuple(map(math.sqrt, echonet.utils.bootstrap(y, np.array(list(map(lambda x: x.mean(), yhat))), sklearn.metrics.mean_squared_error)))))
