@@ -129,6 +129,9 @@ dmypy.json
 .pyre/
 
 ## Steven Ufkes - 2021-03-05
+# Mac
+**/.DS_Store
+
 # Data
 data/
 runs/
