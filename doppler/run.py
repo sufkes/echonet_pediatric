@@ -121,14 +121,14 @@ def val_loop_custom(dataloader, model, loss_fn, device, verbose=False):
     return mean_loss
 
 def calculateMetrics(df, split, run_name, metrics_path, aggregation_type='None'):
-    """df is a dataframe with columns for acutal and predicted values.
+    """df is a dataframe with columns for actual and predicted values.
 
 Should be organized better (e.g. combined with the script for LVOT diameter and EF). Should be in a separate file etc.
 """
     if os.path.exists(metrics_path):
         metrics_df = pd.read_csv(metrics_path)#, index_col='run_name')
     else:
-        metrics_df = pd.DataFrame(dtype=float)
+        metrics_df = pd.DataFrame(columns=['run_name', 'aggregation_type'], dtype=float)
         #metrics_df.index.name = 'run_name'
 
     actual_col = [col for col in df.columns if col.endswith('actual')][0]
@@ -203,6 +203,7 @@ def main(run_name = 'UNNAMED',
          freeze_layers = 2, # For resnet18, let's try 0, 2, 5, 6, 7, 8 (want to freeze batch norm layers following each conv layer (I think)
          dropout_rate = 0.0,
          initial_parameters_path = None, # Set to None if starting from scratch.
+         evaluate_parameters_path = None, # Set to None if you want to evaluate the model using the best parameters found during training. Set to another value if you want to evaluate using a specific set of model weights.
          seed=489,
 
          ## Training loop settings:
@@ -219,7 +220,6 @@ def main(run_name = 'UNNAMED',
          batch_size = 48,
          shuffle = True,
          drop_last = False,
-         #normalize_mode = 'training_set',
          normalize_mode = 'self',
          target_type = 'peak_array',
          #target_type = 'AOVTI_px',
@@ -227,10 +227,11 @@ def main(run_name = 'UNNAMED',
          ## Test settings     
          train = True,
          predict = True,
-         test_vti_from_all_tracings = True, # Test prediction of VTI from all extracted peaks, including those which were not annotated and, therefore, were not included in the VTI curve prediction training.
+         test_vti_from_all_peaks = True, # Test prediction of VTI from all extracted peaks, including those which were not annotated and, therefore, were not included in the VTI curve prediction training.
          force_positive_velocity = False, # Predicted velocity curve values may be negative. If this is set True, these negative values will be converted to zero at test time. They will be unchanged during training.
          plot_tracing = True,
          include_test_set = False, # Whether to include the hold-out test set (not the validation set), reserved for final evaluation of model.
+         no_ground_truth = False, # If you just want to use the model for predictions, and do not have ground truth values in the file list CSV, set this to true.
 ):
     
     ## Set seeds for determinism.
@@ -248,14 +249,14 @@ def main(run_name = 'UNNAMED',
     #print('Using device:', device)
     
     #### Make datasets.
-    train_dataset = DopplerDataset(split='train', target_type=target_type, file_list_path=file_list_path, normalize_mode=normalize_mode)
-    val_dataset = DopplerDataset(split='val', target_type=target_type, file_list_path=file_list_path, normalize_mode=normalize_mode)
-    test_dataset = DopplerDataset(split='test', target_type=target_type, file_list_path=file_list_path, normalize_mode=normalize_mode)
+    train_dataset = DopplerDataset(split='train', target_type=target_type, file_list_path=file_list_path, normalize_mode=normalize_mode, no_ground_truth=no_ground_truth)
+    val_dataset = DopplerDataset(split='val', target_type=target_type, file_list_path=file_list_path, normalize_mode=normalize_mode, no_ground_truth=no_ground_truth)
+    test_dataset = DopplerDataset(split='test', target_type=target_type, file_list_path=file_list_path, normalize_mode=normalize_mode, no_ground_truth=no_ground_truth)
 
-    if test_vti_from_all_tracings:
-        train_all_peaks_dataset = DopplerDataset(split='train', target_type=target_type, file_list_path=file_list_all_peaks_path, normalize_mode=normalize_mode)
-        val_all_peaks_dataset = DopplerDataset(split='val', target_type=target_type, file_list_path=file_list_all_peaks_path, normalize_mode=normalize_mode)
-        test_all_peaks_dataset = DopplerDataset(split='test', target_type=target_type, file_list_path=file_list_all_peaks_path, normalize_mode=normalize_mode)
+    if test_vti_from_all_peaks:
+        train_all_peaks_dataset = DopplerDataset(split='train', target_type=target_type, file_list_path=file_list_all_peaks_path, normalize_mode=normalize_mode, no_ground_truth=no_ground_truth)
+        val_all_peaks_dataset = DopplerDataset(split='val', target_type=target_type, file_list_path=file_list_all_peaks_path, normalize_mode=normalize_mode, no_ground_truth=no_ground_truth)
+        test_all_peaks_dataset = DopplerDataset(split='test', target_type=target_type, file_list_path=file_list_all_peaks_path, normalize_mode=normalize_mode, no_ground_truth=no_ground_truth)
     
     ## Record the image dimensions.
     dim_x = train_dataset[0][0].shape[1]
@@ -281,10 +282,16 @@ def main(run_name = 'UNNAMED',
     #### Set model and hyperparameters
     ## Set model.
     if target_type == 'peak_array':
-        # If predicting the VT curve, need to determine size of model output. Do by checking size of first peak array.
-        out_features = len(train_dataset[0][1])
+        if not no_ground_truth:
+            # If predicting v-t curves, need to determine size of model output. Do by checking size of first peak array.
+            out_features = len(train_dataset[0][1])
+        else:
+            # If predicting v-t curves, but there is no ground truth peak arrays, determine required length of predicted peak based on the width of the input image. This should also work if the ground truth array exists.
+            out_features = train_dataset[0][0].shape[2] # I think image shape of the image will be (C, H, W).
+            print(f'Assuming width of input images is {out_features}.')
     else:
         out_features = 1
+        
     model = net.myResNet18(freeze_layers=freeze_layers, dropout_rate=dropout_rate, out_features=out_features)
     model.to(device)
 
@@ -380,19 +387,21 @@ def main(run_name = 'UNNAMED',
 
         # Reorder columns so that losses are last
         end_cols = ['best_epoch', 'mse_mean_val', 'mse_mean_val_real', 'mse_mean_train']
-        cols = [c for c in hyper_df.columns if not c in end_cols] + end_cols
+        cols = [c for c in hyper_df.columns if not c in end_cols] + [c for c in end_cols if c in hyper_df.columns]
         hyper_df = hyper_df[cols]
         hyper_df.to_csv(hyper_path, index=False)    
 
     if predict:
         ## Generate tables of actual and predicted values.
         ## Load trained model weights.
-        best_state_dict = torch.load(os.path.join(out_dir, 'best.pt'))
+        if evaluate_parameters_path is None:
+            evaluate_parameters_path = os.path.join(out_dir, 'best.pt')
+        best_state_dict = torch.load(evaluate_parameters_path)
         model.load_state_dict(best_state_dict)
         # Be sure to call model.eval() method before inferencing to set the dropout and batch normalization layers to evaluation mode. Failing to do this will yield inconsistent inference results (https://pytorch.org/tutorials/beginner/basics/saveloadrun_tutorial.html).
 
         dataset_dict = {}
-        if test_vti_from_all_tracings:
+        if test_vti_from_all_peaks:
             dataset_dict['train'] = train_all_peaks_dataset
             dataset_dict['val'] = val_all_peaks_dataset
             dataset_dict['test'] = test_all_peaks_dataset
@@ -405,6 +414,10 @@ def main(run_name = 'UNNAMED',
         model.eval()
         with torch.no_grad():
             for split, dataset in dataset_dict.items():
+                ## 2023-01-26: Skip loop if split is empty (haven't tested this change thoroughly)
+                if len(dataset) == 0:
+                    continue
+                
                 if (split == 'test') and (not include_test_set):
                     continue
                 dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
@@ -424,11 +437,13 @@ def main(run_name = 'UNNAMED',
                     yhat = model(img)
 
                     # Load actual and predicted values. This will be a single number if target_type == 'AOVTI', and a vector if target_type == 'peak_array'
-                    y = y[0].cpu().numpy()
+                    if not no_ground_truth:
+                        y = y[0].cpu().numpy()
                     yhat = yhat[0].cpu().numpy()
-                    # If predicting peak_array, convert negative velocities to zero if specified.
+                    
+                    # If predicting peak_array, convert negative velocities to zero if requested.
                     if (target_type == 'peak_array') and force_positive_velocity:
-                        warnings.warn('Changing negative velocity values to zero at test-time.')
+                        #warnings.warn('Changing negative velocity values to zero at test-time.')
                         yhat[yhat<0] = 0
 
                     if target_type == 'peak_array':
@@ -446,32 +461,33 @@ def main(run_name = 'UNNAMED',
                             plt.figure()
                             plt.axis('off')
                             plt.imshow(pixel_data, cmap='gray')
-                            plt.plot(y, color='red', linewidth=1)
+                            if not no_ground_truth:
+                                plt.plot(y, color='red', linewidth=1)
                             plt.plot(yhat, color='blue', linewidth=1)
                             plt.savefig(out_path, bbox_inches='tight', pad_inches=0)
                             plt.close()
                         
-                        #image_with_peaks.save(out_path)
-
                         ## Store the VTI prediction for the curve; will later be combined with predictions for other peaks to compute subject VTI.
                         subject_base = dataset.data_df.loc[index, 'Subject_base']
                         df.loc[subject, 'Subject_base'] = subject_base # for peak images, subject will have a name like VTI123_5, and subject_base will be the orignal subject name, e.g. VTI123
 
-                        if test_vti_from_all_tracings:
-                            vti_cm = dataset.data_df.loc[index, 'AOVTI_annotation']
-                        else:
-                            vti = y.sum() # old way, where I calculated VTI from my tracings of every extracted peak.
+                        if not no_ground_truth:
+                            if test_vti_from_all_peaks:
+                                vti_cm = dataset.data_df.loc[index, 'AOVTI_annotation']
+                            else:
+                                vti = y.sum() # old way, where I calculated VTI from my tracings of every extracted peak.
                         vti_hat = yhat.sum()
 
                         ## Convert from units of pixels back to cm.
                         # Prediction is for a number of pixels in the image. 
                         # Each pixel represents a certain number of centimeters, different for each subject.
                         scale_factor = dataset.data_df.loc[index, 'pixel_scale_factor'] # do not use downscale_y for the target_type == 'peak_array'
-                        if not test_vti_from_all_tracings:
+                        if (not no_ground_truth) and (not test_vti_from_all_peaks):
                             vti_cm = vti * scale_factor
                         vti_hat_cm = vti_hat * scale_factor
-                        
-                        df.loc[subject, target_type+'_actual'] = vti_cm
+
+                        if (not no_ground_truth):
+                            df.loc[subject, target_type+'_actual'] = vti_cm
                         df.loc[subject, target_type+'_prediction'] = vti_hat_cm
 
                     else:
@@ -481,15 +497,14 @@ def main(run_name = 'UNNAMED',
                         scale_factor = dataset.downscale_y * dataset.data_df.loc[index, 'pixel_scale_factor']
                         #y_cm = y.item() * scale_factor # before adding cpu().numpy()
                         #yhat_cm = yhat.item() * scale_factor # before adding cpu().numpy()
-                        y_cm = y * scale_factor # actual VTI in units of cm
+                        if not no_ground_truth:
+                            y_cm = y * scale_factor # actual VTI in units of cm
                         yhat_cm = yhat[0] * scale_factor # predicted VTI in units of cm
 
                         # Save the predictions in units of pixels for sanity check.
-                        df.loc[subject, target_type+'_actual'] = y_cm # before adding cpu().numpy()
+                        if not no_ground_truth:
+                            df.loc[subject, target_type+'_actual'] = y_cm # before adding cpu().numpy()
                         df.loc[subject, target_type+'_prediction'] = yhat_cm # before adding cpu().numpy()
-                        
-                        #df_raw.loc[subject, target_type+'_raw_actual'] = y.item()
-                        #df_raw.loc[subject, target_type+'_raw_prediction'] = yhat.item()
 
                 if target_type == 'peak_array':
                     # Compute the mean VTI across all peaks for the subject.
@@ -506,9 +521,10 @@ def main(run_name = 'UNNAMED',
                     ## Combine predictions across peaks in different ways, calculating performance metrics for each method separately.
                     # mean
                     aggregation_type = 'mean'
-                    output_metric = calculateMetrics(mean_df, split, run_name, metrics_path, aggregation_type=aggregation_type)
+                    if not no_ground_truth:
+                        output_metric = calculateMetrics(mean_df, split, run_name, metrics_path, aggregation_type=aggregation_type)
                     # Keep the MSE in the final VTI prediction to output from run() for hyperparameter optimization.
-                    if split == 'val':
+                    if (split == 'val') and (not no_ground_truth):
                         warnings.warn('Saving MSE for final predicted VTI, for hyperparameter optimization.')
                         output_loss = output_metric
                     predictions_out_name = f'{split}-{target_type}-{aggregation_type}-pred_and_actual.csv'
@@ -517,7 +533,8 @@ def main(run_name = 'UNNAMED',
 
                     # median
                     aggregation_type = 'median'
-                    calculateMetrics(median_df, split, run_name, metrics_path, aggregation_type=aggregation_type)
+                    if not no_ground_truth:
+                        calculateMetrics(median_df, split, run_name, metrics_path, aggregation_type=aggregation_type)
                     predictions_out_name = f'{split}-{target_type}-{aggregation_type}-pred_and_actual.csv'
                     predictions_out_path = os.path.join(out_dir, predictions_out_name)
                     median_df.to_csv(predictions_out_path, index=True)
@@ -534,7 +551,8 @@ def main(run_name = 'UNNAMED',
                                 df_no_outliers.drop(index=index, inplace=True)
                     mean_no_outliers_df = df_no_outliers.groupby('Subject_base').mean()                
                     aggregation_type = 'mean_no_outliers'
-                    calculateMetrics(mean_no_outliers_df, split, run_name, metrics_path, aggregation_type=aggregation_type)
+                    if not no_ground_truth:
+                        calculateMetrics(mean_no_outliers_df, split, run_name, metrics_path, aggregation_type=aggregation_type)
                     predictions_out_name = f'{split}-{target_type}-{aggregation_type}-pred_and_actual.csv'
                     predictions_out_path = os.path.join(out_dir, predictions_out_name)
                     mean_no_outliers_df.to_csv(predictions_out_path, index=True)
@@ -548,10 +566,11 @@ def main(run_name = 'UNNAMED',
                     #df_raw.to_csv(out_path, index=True)
 
                     # Calculate performance metrics.
-                    calculateMetrics(df, split, run_name, metrics_path)
+                    if not no_ground_truth:
+                        calculateMetrics(df, split, run_name, metrics_path)
 
     # Need to return a value for optimization with hyperopt. Perhaps should use loss from the final predicted VTI, rather than the pixelwise MSE in the VTI tracings.
-    if predict and (target_type == 'peak_array'):
+    if predict and (target_type == 'peak_array') and (not no_ground_truth):
         return output_loss
     else:
         return

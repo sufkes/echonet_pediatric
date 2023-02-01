@@ -1,0 +1,11 @@
+﻿Subject,split
+VTI1,train
+VTI2,train
+VTI3,train
+VTI4,train
+VTI5,val
+VTI7,val
+VTI8,val
+VTI9,test
+VTI10,test
+VTI11,test

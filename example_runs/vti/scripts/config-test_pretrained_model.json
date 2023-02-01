@@ -1,0 +1,20 @@
+{
+    "run_name": "example_runs-vti-test",
+    "out_dir": "/hpf/largeprojects/ccmbio/sufkes/echonet_pediatric/example_runs/vti/runs/example-test_pretrained_model",
+    "note": "",
+    "hyper_path": "/hpf/largeprojects/ccmbio/sufkes/echonet_pediatric/example_runs/vti/runs/hyperparameters.csv",
+    "metrics_path": "/hpf/largeprojects/ccmbio/sufkes/echonet_pediatric/example_runs/vti/runs/metrics.csv",
+    "evaluate_parameters_path": "/hpf/largeprojects/ccmbio/sufkes/echonet_pediatric/runs/doppler/best_hyperopt_run_with_mean_aggregation-vti/best.pt",
+    "seed": 489,
+    "file_list_path": "/hpf/largeprojects/ccmbio/sufkes/echonet_pediatric/example_runs/vti/datasheets/file_list-split_peaks.csv",
+    "file_list_all_peaks_path": "/hpf/largeprojects/ccmbio/sufkes/echonet_pediatric/example_runs/vti/datasheets/file_list-split_peaks-all_peaks.csv",
+    "normalize_mode": "self",
+    "target_type": "peak_array",
+    "train": false,
+    "predict": true,
+    "test_vti_from_all_peaks": true,
+    "force_positive_velocity": true,
+    "plot_tracing": true,
+    "include_test_set": true,
+    "no_ground_truth": false
+}

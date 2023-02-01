@@ -9,6 +9,7 @@
     "freeze_layers":2,
     "dropout_rate":0.0,
     "initial_parameters_path":"/hpf/largeprojects/ccmbio/sufkes/echonet_pediatric/runs/doppler/peak_curves-steves_annotations/peak_curves-rescale/best.pt",
+    "evaluate_parameters_path":null,
     "seed":489,
     
     "optimizer_name":"AdamW",

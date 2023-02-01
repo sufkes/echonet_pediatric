@@ -19,10 +19,11 @@ class DopplerDataset(Dataset):
                  target_type = 'AOVTI_px',
                  normalize_mode = 'training_set',
                  target_transform = None,
-                 file_list_path = '/hpf/largeprojects/ccmbio/sufkes/echonet_pediatric/data/data_from_sickkids/processed/clinical_data/vti/FileList_vti.csv',
-                 split_col = 'split_all_random',
+                 file_list_path = None,
+                 split_col = 'split',
                  file_path_col = 'FilePath',
-                 downscale_y = 10000 # divide return number of pixels by this number to avoid (overflow errors? nonconverging loss?). In early tests predicting the raw number of pixels, the loss would not converge. Dividing by a large number seemed to fix the problem.
+                 downscale_y = 10000, # divide return number of pixels by this number to avoid (overflow errors? nonconverging loss?). In early tests predicting the raw number of pixels, the loss would not converge. Dividing by a large number seemed to fix the problem. This option is only used when directly predicting VTI from a complete v-t plot. It is not used when predicting VTI from a set of extracted v-t peaks.
+                 no_ground_truth = False # If you just want to use the model for predictions, and do not have ground truth values in the file list CSV, set this to true.
     ):
         
         data_df = pd.read_csv(file_list_path)
@@ -64,6 +65,7 @@ class DopplerDataset(Dataset):
         self.file_path_col = file_path_col
         if target_type == 'AOVTI_px':
             self.downscale_y = downscale_y
+        self.no_ground_truth = no_ground_truth
 
     def __getitem__(self, index):
         # Get input
@@ -74,9 +76,14 @@ class DopplerDataset(Dataset):
 
         # Get output
         if self.target_type == 'peak_array':
-            peak_array_path = self.data_df.loc[index, 'peak_array_path']
-            target = np.load(peak_array_path)
+            if self.no_ground_truth:
+                # If the ground truth peak array is not available, return an array of zeros instead.
+                target = np.zeros(shape=(img.shape[2],), dtype=np.float32)
+            else:
+                peak_array_path = self.data_df.loc[index, 'peak_array_path']
+                target = np.load(peak_array_path)
         else:
+            # I have not written code to handle the case of no_ground_truth when target_type != 'peak_array'
             target = self.data_df.loc[index, self.target_type]
             if self.target_transform:
                 target = self.target_transform(target)

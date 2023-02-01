@@ -84,7 +84,7 @@ def main(config_path=None, actual_path=None, prediction_paths=None, out_dir=None
 
 if (__name__ == '__main__'):
     # Create argument parser
-    description = """Description of function"""
+    description = """This function combines actual and predicted values output from the model. If test-time augmentation was used to make predictions for many video sub-clips from each video, these will be averaged to output a single value. This task is now performed within the training and evaluation script."""
     parser = argparse.ArgumentParser(description=description)
     
     # Define positional arguments.

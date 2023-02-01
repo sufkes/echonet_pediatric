@@ -1,0 +1,11 @@
+Subject,LVEF,split
+4C1,64,train
+4C2,61,train
+4C3,64,train
+4C4,60,train
+4C5,53,val
+4C7,43.75,val
+4C8,52,val
+4C9,55,test
+4C10,61,test
+4C11,65,test

@@ -112,7 +112,7 @@ def main(**kwargs):
 
 if (__name__ == '__main__'):
     # Create argument parser.
-    description = """Generate CSV of regression metrics for runs."""
+    description = """Generate CSV of regression metrics for runs. This task is now performed in the main training and evaluation script."""
     parser = argparse.ArgumentParser(description=description, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
     # Define positional arguments.

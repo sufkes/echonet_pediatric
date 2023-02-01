@@ -61,7 +61,7 @@ Returns:
     return peak
 
 def getGroundTruthVti(annotation):
-    """Compute the VTI corresponding to each annotated peak, and return the average of the VTIs across the annotated peaks. The result is VTI in units of pixels."""
+    """Compute the VTI corresponding to each annotated peak, and return the average of the VTIs across the annotated peaks. The result is VTI in units of pixels. Also return the number of peaks which were annotated."""
     vti_list = []
     vti = 0
     for ii, val in enumerate(annotation):
@@ -70,7 +70,8 @@ def getGroundTruthVti(annotation):
             vti_list.append(vti)
             vti = 0
     vti_px = np.mean(np.array(vti_list))
-    return vti_px
+    num_peaks_annotated_actual = len(vti_list)
+    return vti_px, num_peaks_annotated_actual
 
 def removeGreenLine(pixel_data_ycbcr):
     """Attempt to remove the green heartbeat line from the v-t plot. Input the cropped v-t plot pixel array."""
@@ -286,7 +287,7 @@ def main(dicom_in_dir, datasheet_path, image_out_dir, file_list_out_path, out_co
     # Keep track of the number of peaks extracted, and the number of peaks annotated.
     if read_annotations and split_peaks:
         total_peaks_extracted = 0
-        total_peaks_annotated = 0
+        total_extracted_peaks_annotated = 0
     
     ## Loop over the DICOM files.
     first_subject = True # If this is the first subject in the list.
@@ -331,8 +332,8 @@ def main(dicom_in_dir, datasheet_path, image_out_dir, file_list_out_path, out_co
         
         # Get information about the v-t plot from the DICOM, including the physical units along the x and y axes. 
         try:
-            vt_seq = dicom[(0x0018,0x6011)][1] # DICOM sequence tag for the VT plot (hopefully).
-            for line in dicom[(0x0018,0x6011)][1]:
+            vt_seq = dicom[(0x0018,0x6011)][1] # DICOM sequence tag for the VT plot (hopefully). This is the second element in the Sequence of Ultrasound Regions Attribute, which usually corresponds to the VTI plot for Doppler images. This may not always be true.
+            for line in vt_seq:
                 base_df.loc[subject, line.keyword] = line.value
         except:
             print('Cannot find information about v-t sequence for:', subject)
@@ -369,12 +370,14 @@ def main(dicom_in_dir, datasheet_path, image_out_dir, file_list_out_path, out_co
         ## Get the ground truth VTI value from the annotated image. This is the mean of the VTI's for each annotated peak, regardless of whether the peaks are identified by the getPeaks method later.
         if read_annotations:
             # VTI in units of pixels in the annotated image:
-            vti_ground_truth_px = getGroundTruthVti(annotation)
+            vti_ground_truth_px, num_peaks_annotated_actual = getGroundTruthVti(annotation)
 
             # VTI in units of cm, converted from pixels using information in the DICOM tags.
             vti_ground_truth = base_df.loc[subject, 'PhysicalDeltaX'] * base_df.loc[subject, 'PhysicalDeltaY'] * vti_ground_truth_px # ground truth VTI in cm.
             base_df.loc[subject, 'AOVTI_annotation_px_original'] = vti_ground_truth_px
             base_df.loc[subject, 'AOVTI_annotation'] = vti_ground_truth
+
+            base_df.loc[subject, 'num_peaks_annotated_actual'] = num_peaks_annotated_actual
             
         ## Generate a list of preprocessed sub-images if splitting image into pieces.
         if split_peaks:
@@ -391,7 +394,7 @@ def main(dicom_in_dir, datasheet_path, image_out_dir, file_list_out_path, out_co
             first_subject = False
 
         if read_annotations:
-            num_peaks_annotated = 0 # keep track of the number of extracted peaks which were annotated.
+            num_extracted_peaks_annotated = 0 # keep track of the number of extracted peaks which were annotated
         for image_num, (pixel_data_ycbcr, annotation) in enumerate(zip(image_list, annotation_list), 1):
             ## Add row in new dataframe.
             if split_peaks:
@@ -505,6 +508,7 @@ def main(dicom_in_dir, datasheet_path, image_out_dir, file_list_out_path, out_co
             ## Get the final scaling factor for each row (could be different for each peak image if splitting peaks.
             # True VTI (cm) = (# processed pixels) * rescale_x * rescale_y * PhysicalDeltaX * PhysicalDeltaY
             #               = (# processed pixels) * pixel_scale_factor
+            # In other words, pixel_scale_factor is the number of centimeters within the area of a single pixel in the processed image.
             pixel_scale_factor = rescale_x * rescale_y * base_df.loc[subject, 'PhysicalDeltaX'] * base_df.loc[subject, 'PhysicalDeltaY']
             df.loc[subject_new, 'pixel_scale_factor'] = pixel_scale_factor
             
@@ -514,7 +518,7 @@ def main(dicom_in_dir, datasheet_path, image_out_dir, file_list_out_path, out_co
                 df.loc[subject_new, 'AOVTI_px_annotation_extracted_peaks'] = vti_px_annotation # the number of pixels; this will be zero if the extracted peak was not annotated
                 df.loc[subject_new, 'AOVTI_annotation_extracted_peaks'] = vti_px_annotation*pixel_scale_factor
                 if vti_px_annotation > 0:
-                    num_peaks_annotated += 1
+                    num_extracted_peaks_annotated += 1
             
             # Record pixels in the training set in order to obtain the mean and standard deviation. Should be done differently if using multiple color channels
             if (base_df.loc[subject, 'split'] == 'train'):
@@ -526,11 +530,11 @@ def main(dicom_in_dir, datasheet_path, image_out_dir, file_list_out_path, out_co
         # Keep track of the number of peaks whichprocessVti.py were annotated by Cameron.
         if read_annotations and split_peaks:
             df.loc[df['Subject_base'] == subject, 'num_peaks_extracted'] = len(annotation_list)
-            df.loc[df['Subject_base'] == subject, 'num_peaks_annotated_found'] = num_peaks_annotated
-            df.loc[df['Subject_base'] == subject, 'num_peaks_annotated_missed'] = df.loc[subject_new, 'num_peaks_annotated_actual'] - num_peaks_annotated 
+            df.loc[df['Subject_base'] == subject, 'num_peaks_annotated_found'] = num_extracted_peaks_annotated
+            df.loc[df['Subject_base'] == subject, 'num_peaks_annotated_missed'] = df.loc[subject_new, 'num_peaks_annotated_actual'] - num_extracted_peaks_annotated 
 
             total_peaks_extracted += len(annotation_list)
-            total_peaks_annotated += num_peaks_annotated
+            total_extracted_peaks_annotated += num_extracted_peaks_annotated
 
     ## Sort the rows based on subject name
     df.sort_values('Subject', axis=0, key=sort_id_key_vectorized, inplace=True)
@@ -563,7 +567,7 @@ def main(dicom_in_dir, datasheet_path, image_out_dir, file_list_out_path, out_co
     ## Print number of peaks annotated.
     if split_peaks and read_annotations:
         print('Number of peaks extracted:', total_peaks_extracted)
-        print('Number of peaks annotated:', total_peaks_annotated)
+        print('Number of extracted peaks annotated:', total_extracted_peaks_annotated)
     
     ## Save the dataframe.
     if not file_list_out_path is None:
@@ -584,9 +588,9 @@ if __name__ == '__main__':
     # Input/output paths
     parser.add_argument('--dicom_in_dir',
                         type=str,
-                        help='input directory containing DICOM VTI files')
+                        help='input directory containing DICOM VTI files. Input files should be named <subject>.dcm')
     parser.add_argument('--datasheet_path',
-                        help='path to CSV file containing data about each input VTI file. Expected columns: Subject, split, num_peaks_annotated_actual. May contain additional columns.')
+                        help='path to CSV file containing data about each input VTI file. Expected columns: Subject, split. May contain additional columns.')
     parser.add_argument('--image_out_dir',
                         type=str,
                         help='directory to save processed images to')
